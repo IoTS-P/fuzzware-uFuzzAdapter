@@ -7,8 +7,8 @@ import logging
 from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
 
-from . import interrupt_triggers, native, timer, user_hooks
-from .....semu_fuzz import globs
+from . import interrupt_triggers, native, timer, user_hooks,globs
+
 from .gdbserver import GDBServer
 from .mmio_models import parse_mmio_model_config
 from .sparkle import add_sparkles
@@ -17,7 +17,7 @@ from .user_hooks import (add_block_hook, add_func_hook,
                          maybe_register_global_block_hook)
 from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
-
+from .uFuzzAdapterPython.headless_ghidra import run_ghidra
 logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 logger = logging.getLogger("emulator")
 
@@ -34,7 +34,8 @@ def unicorn_trace_syms(uc, pc, size=0, user_data=None):
 def configure_unicorn(args):
     logger.info(f"Loading configuration in {str(args.config)}")
     config = load_config_deep(args.config)
-
+    # start ghidra thread
+    run_ghidra(config['binary_file'],config['port'])
     native_lib_path = os.path.dirname(os.path.realpath(__file__))+'/native/native_hooks.so'
     if not os.path.exists(native_lib_path):
         logger.error(f"Native library {str(native_lib_path)} does not exist! Exiting...")
