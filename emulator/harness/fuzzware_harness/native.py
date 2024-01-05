@@ -308,6 +308,10 @@ def add_interrupt_trigger(uc, addr, irq, num_skips, num_pends, fuzz_mode, trigge
 def register_native_debug_hooks(uc):
     assert(native_lib.add_debug_hooks(uc._uch) == 0)
 
+def register_beginpoint_hook(uc,beginpoint):
+    print(beginpoint)
+    assert(native_lib.add_beginpoint_hook(uc._uch,int(beginpoint)) == 0)
+
 def load_native_lib(native_lib_path):
     global native_lib
 
@@ -377,6 +381,9 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     # DEBUG
     # uc_err add_debug_hooks(uc_engine *uc)
     _setup_prototype(native_lib, "add_debug_hooks", ctypes.c_int, uc_engine)
+    
+    # uFuzzAdapter
+    _setup_prototype(native_lib, "add_beginpoint_hook", ctypes.c_int, uc_engine,ctypes.c_uint64)
 
     # TIMER
     # extern uint64_t get_global_ticker();

@@ -35,8 +35,9 @@ def configure_unicorn(args):
     logger.info(f"Loading configuration in {str(args.config)}")
     config = load_config_deep(args.config)
     # start ghidra thread
-    run_ghidra(config['binary_file'],config['port'])
+    # run_ghidra(config['binary_file'],config['port'])
     native_lib_path = os.path.dirname(os.path.realpath(__file__))+'/native/native_hooks.so'
+    print("native_lib_path: ",native_lib_path)
     if not os.path.exists(native_lib_path):
         logger.error(f"Native library {str(native_lib_path)} does not exist! Exiting...")
         sys.exit(1)
@@ -310,6 +311,7 @@ def configure_unicorn(args):
         uc.gdb = GDBServer(uc, args.gdb_port)
     else:
         uc.gdb = None
+    native.register_beginpoint_hook(uc,config["entry_point"])
 
     return uc
 

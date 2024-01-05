@@ -1,5 +1,18 @@
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <stdint.h>
 #include<unicorn/unicorn.h>
+void beginpointHook(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+extern "C" {
+uc_err add_beginpoint_hook(uc_engine *uc,uint64_t begin_point);
+}
+
+uc_err add_beginpoint_hook(uc_engine *uc,uint64_t begin_point) {
+    uc_hook res;
+    uc_err err = uc_hook_add(uc, &res,UC_HOOK_CODE,(void *)beginpointHook, NULL, begin_point - 1, begin_point | 1);
+    return err;
+}
 
 void beginpointHook(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
     // try to set fork_point_times related to user_input in the future
@@ -30,3 +43,5 @@ void beginpointHook(uc_engine *uc, uint64_t address, uint32_t size, void *user_d
     // }
     // uc_hook_del(RULE.beginpointHook_handler);
 }
+
+
