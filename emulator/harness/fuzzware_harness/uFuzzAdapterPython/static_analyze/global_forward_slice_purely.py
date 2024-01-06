@@ -67,8 +67,8 @@ callread_pcs = []
 
 decompiler = DecompInterface()
 decompiler.openProgram(currentProgram)
-options = DecompileOptions()
-decompiler.setOptions(options)
+# options = DecompileOptions()
+# decompiler.setOptions(options)
 
 #analyse consume global var
 temp_get = []
@@ -465,12 +465,14 @@ def handle_PTRSUB_pcode(op,param_vn):
         desc_pcode = worklist[-1]
         ##f.write("The origin desc_pcode is {}\n".format(desc_pcode))
         worklist.pop()
-            
+        fliter_set = set()
         #Continue to find the next descendant,and keep adding the offset until the descendant is STORE or LOAD
         while desc_pcode.getOpcode() != PcodeOp.STORE and desc_pcode.getOpcode() != PcodeOp.LOAD and desc_pcode.getOpcode() != PcodeOp.CALL and desc_pcode.getOpcode() != PcodeOp.CALLIND and desc_pcode not in MULTIEQUAL_set:
             #print(desc_pcode)
             add_multiequal_pcode(desc_pcode)
-            ##f.write("The loop desc_pcode is {}\n".format(desc_pcode))
+            if des in fliter_set:
+                break
+            fliter_set.add(des)
             if desc_pcode.getOpcode() == PcodeOp.PTRSUB:
                 offset += desc_pcode.getInput(1).offset
             output_vn = desc_pcode.getOutput()
@@ -582,10 +584,14 @@ def get_called_functions(function, called_functions=None):
             if global_base_addr:
                 print("global_base_addr is",global_base_addr)
                 # print(op)
+                fliter_set = set()
                 des = op
                 while des.getOpcode() != PcodeOp.CALL and des.getOpcode() != PcodeOp.CALLIND and des.getOutput() and des not in MULTIEQUAL_set:
                     #print(des)
                     add_multiequal_pcode(des)
+                    if des in fliter_set:
+                        break
+                    fliter_set.add(des)
                     out = des.getOutput()
                     if out.getDescendants().hasNext():
                         des = out.getDescendants().next()
@@ -756,12 +762,19 @@ def find_real_callread_addr(callread_addr,slot = None):
                 else:
                     #if not,then backforward found the pcode of output_vn to check wheter the ret_vn is global_variable
                     des_out = output_vn
+                    fliter_set = set()
                     while des_out:
                         descs = des_out.getDescendants()
                         if not descs.hasNext():
                             break
                         des = descs.next()
-                        print(des)
+                        if des in MULTIEQUAL_set:
+                            break
+                        add_multiequal_pcode(des)
+                        if des in fliter_set:
+                            break
+                        fliter_set.add(des)
+                        # print(des)
                         for i in range(des.getNumInputs()):
                             ret = check_if_global(des.getInput(i))
                             if ret:
@@ -809,11 +822,13 @@ def find_real_callread_addr(callread_addr,slot = None):
             while len(q):
                 print("len = ",len(q))
                 des = q.pop()
+                add_multiequal_pcode(des)
                 print(des)
                 if des.getOpcode() in ComputeOps_list or des.getOpcode() in CompareOps_list:
                     if des.getOutput():
                         sub_des = des.getOutput().getDescendants().next()
-                        q.append(sub_des)
+                        if sub_des not in MULTIEQUAL_set:
+                            q.append(sub_des)
                 #if found the data destination is global,try to found the data source:
                 #check if it is global,or it is the param of the prev CALL pcode
                 else:
@@ -1156,15 +1171,21 @@ def run_until_satisfy_special_pcode(pcode):
         temp_des = origin_des
         out = None
         flag = 1
-        while temp_des.getOpcode() not in ComputeOps_list and temp_des.getOpcode() not in CompareOps_list and temp_des.getOpcode() != PcodeOp.CALL and temp_des.getOpcode() != PcodeOp.CALLIND and temp_des.getOpcode() != PcodeOp.STORE and temp_des.getOpcode() != PcodeOp.RETURN:
+        fliter_set = set()
+        while temp_des.getOpcode() not in ComputeOps_list and temp_des.getOpcode() not in CompareOps_list and temp_des.getOpcode() != PcodeOp.CALL and temp_des.getOpcode() != PcodeOp.CALLIND and temp_des.getOpcode() != PcodeOp.STORE and temp_des.getOpcode() != PcodeOp.RETURN and temp_des not in MULTIEQUAL_set:
             flag = 0
             temp_out = temp_des.getOutput()
             if not temp_out or temp_out == out:
                 break
             out = temp_out
             for temp_des in out.getDescendants():
+                add_multiequal_pcode(temp_des)
+                if temp_des in fliter_set:
+                    break
+                fliter_set.add(temp_des)
+                print("fliter_set = {}".format(fliter_set))
                 descendant_queue.append(temp_des)
-                #print("temp_des = {}".format(temp_des))
+                print("temp_des = {}".format(temp_des))
         if flag:
             result.append(temp_des)
     return result
@@ -1985,10 +2006,10 @@ def setup_process(callread_addr,read_addr,entry_point,irq_pc = None,buffer_addr 
     print("addr:",lst)
     
     
-    if callread_addr:
-        if buffer_addr != None:
-            callread_addr = toAddr(callread_addr.offset-1)
-            callread_addr = getInstructionBefore(callread_addr).getAddress()
+    # if callread_addr:
+    #     if buffer_addr != None:
+    #         callread_addr = toAddr(callread_addr.offset-1)
+    #         callread_addr = getInstructionBefore(callread_addr).getAddress()
     
     
     if filename and os.path.isfile(filename):
@@ -2223,3 +2244,4 @@ def all_main(callread_addr,read_addr,entry_point,irq_pc = None,buffer_addr = Non
 # all_main(134224564, 134224564, 134238021, None, None)
 # all_main(134238814, 134238814, 134255201, None, None,None)
 # all_main(524679, 529480, 528181, 527036, 537332608,None)
+# all_main(134268810, 134268810, 134218345, None, None,None)

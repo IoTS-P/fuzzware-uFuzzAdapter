@@ -34,8 +34,9 @@ def unicorn_trace_syms(uc, pc, size=0, user_data=None):
 def configure_unicorn(args):
     logger.info(f"Loading configuration in {str(args.config)}")
     config = load_config_deep(args.config)
+    globs.debug_file_path = config['debug_file_path']
     # start ghidra thread
-    # run_ghidra(config['binary_file'],config['port'])
+    run_ghidra(config['binary_file'],config['port'])
     native_lib_path = os.path.dirname(os.path.realpath(__file__))+'/native/native_hooks.so'
     print("native_lib_path: ",native_lib_path)
     if not os.path.exists(native_lib_path):
@@ -367,7 +368,7 @@ def main():
 
     args = parser.parse_args()
     globs.input_file_name = os.path.basename(args.input_file)
-
+    
     if not os.path.exists(args.config):
         logger.error(f"config file '{args.config}' does not exist")
         sys.exit(1)

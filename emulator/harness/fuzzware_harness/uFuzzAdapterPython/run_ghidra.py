@@ -15,37 +15,37 @@ my_debug_log = logging.debug
 #from static_analyze import Callind_Collect,global_forward_slice_purely,Analyse_Consume_PC
 
 args = getScriptArgs()
-ghidra_port = int(args[0])
+port = int(args[0])
 # semu_fuzz_name = str(args[-2])
+# my_debug_log("port = ",port)
 # global_dict = globals()
-now_path = os.path.dirname(__file__)
-with open(os.path.join(now_path, "static_analyze/Callind_Collect.py"), "r") as ccf,open(os.path.join(now_path, "static_analyze/global_forward_slice_purely.py"), "r") as gfspf:
+with open("/home/liyuweiheng/.local/lib/python3.10/site-packages/semu_fuzz/emulate/semu/static_analyze/Callind_Collect.py","r") as ccf,open("/home/liyuweiheng/.local/lib/python3.10/site-packages/semu_fuzz/emulate/semu/static_analyze/global_forward_slice_purely.py","r") as gfspf:
     ccf_code = ccf.read()
     exec(ccf_code)
     gfspf_code = gfspf.read()
     exec(gfspf_code)
     my_debug_log("write success!")
-    my_debug_log("port = ", ghidra_port)
+    my_debug_log("port = ",port)
     
 def run():
     my_debug_log("current_dir ={}".format(os.getcwd()))
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     # port = 10045   
-    my_debug_log("port = {}".format(ghidra_port))               
+    my_debug_log("port = {}".format(port))               
     while(True):
         try:
-            server_address = ('localhost', ghidra_port)
+            server_address = ('localhost', port)
             my_debug_log("server_address = {}".format(server_address))
             server_socket.bind(server_address)
-            server_socket.listen(10)
-            my_debug_log("current port is :{}".format(ghidra_port))
+            server_socket.listen(1000)
+            my_debug_log("current port is :{}".format(port))
             break
         except:
             my_debug_log("error") 
             continue
 
-    my_debug_log("listening on port %d" % ghidra_port)
+    my_debug_log("listening on port %d" % port)
     #get the code from the file
     try:
         while True:
@@ -77,11 +77,11 @@ def handle_client(client_socket):
             param_data = param_data.decode()
             # 解析参数
             list = json.loads(param_data)
-            my_debug_log('Received :', param_data)
+            my_debug_log('Received : {}'.format(param_data))
             run_type = list[0]
             #my_debug_log("run_type:", list[0])
             response = "null"
-            my_debug_log('run_type :', run_type)
+            my_debug_log('run_type : {}'.format(run_type))
             
             # 运行间接调用脚本
             if run_type == "callind_collect":
@@ -91,8 +91,18 @@ def handle_client(client_socket):
             # 运行总脚本(avail脚本和consume脚本)
             elif run_type == "global_static_data":
                 my_debug_log('exe the all_main_code')
+                my_debug_log("list = {}".format(list))
                 response = all_main(list[1],list[2],list[3],list[4],list[5],list[6])
-                
+            
+            # 用于纠正Lr寄存器
+            elif run_type == "correct_lr":
+                my_debug_log('exe the correct_lr')
+                callread_pc = list[1]
+                my_debug_log('origin callread = {}'.format(callread_pc))
+                callread_pc = toAddr(int(callread_pc) - 1)
+                my_debug_log('hex callread = {}'.format(callread_pc))
+                response = '0x'+str(getInstructionBefore(callread_pc).getAddress())
+                my_debug_log('response callread = {}'.format(response))
             else:
                 my_debug_log('error run_type!')
                 continue

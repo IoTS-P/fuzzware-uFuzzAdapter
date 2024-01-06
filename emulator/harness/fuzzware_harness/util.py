@@ -186,3 +186,10 @@ def load_config_deep(path):
     if config is None:
         return {}
     return resolve_config_includes(config, path)
+
+def my_debug_log(message):
+    # from .globs import debug_file_path
+    # logging.basicConfig(level=logging.DEBUG, filename=debug_file_path, filemode='w+')
+    # logging.debug(message)
+    print(message)
+    pass
