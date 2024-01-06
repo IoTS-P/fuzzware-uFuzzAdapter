@@ -122,17 +122,19 @@ class EmulationHandler:
         
         # recover the shared memory
         self.read_from_shared_memory()
-        '''
-        # 初始化的时候就hook所有的data_regs
         self.get_callind_addr()
         self.hook_all_data_regs()
+        
+        # 初始化的时候就hook所有的data_regs
+        
+        
         self.hook_all_indirect_call()
         
         #只用于第一轮，减少开销
         
         if not self.get_data_from_shared_memory:
             self.write_byte_to_data_reg(self.data_regs,[0xBB]*4)
-        '''
+        
 
     def read_from_shared_memory(self):
         '''
@@ -142,7 +144,8 @@ class EmulationHandler:
         
         if self.debug:
             # read from shared memory file
-            shm_file = os.path.join(os.path.dirname(globs.args.config_file), f"ghidra_project/{globs.config.port}_shared_memory.txt")
+            home_path = os.path.expanduser('~')
+            shm_file = os.path.join(home_path, f"ghidra_project/{self.port}_shared_memory.txt")
             if os.path.exists(shm_file):
                 with open(shm_file, "rb") as f:
                     emulation_handler_serialized_data = f.read()
@@ -1312,7 +1315,8 @@ class EmulationHandler:
             shm = shared_memory.SharedMemory(name=self.shm_name)
             shm.buf[: len(serialized_data)] = serialized_data
         # write the serialized data to the file, no matter debug mode or not
-        shm_file = os.path.join(os.path.dirname(globs.args.config_file), f"ghidra_project/{globs.config.port}_shared_memory.txt")
+        home_path = os.path.expanduser('~')
+        shm_file = os.path.join(home_path, f"ghidra_project/{self.port}_shared_memory.txt")
         with open(shm_file, "wb") as f:
             my_debug_log("shm_file:{}".format(shm_file))
             f.write(serialized_data)

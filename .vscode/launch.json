@@ -1,0 +1,25 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "fuzzware-drone",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+              "emu",
+              "-c",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Drone/config.yml",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Drone/my_inputs/aaa",
+              
+            //   "-d",
+            //   "3"
+            ]
+          }
+    ]
+}
