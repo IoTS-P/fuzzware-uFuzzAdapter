@@ -29,14 +29,15 @@ from multiprocessing import shared_memory
 
 
 class EmulationHandler:
-    def __init__(self, ghidra_config, data_regs_list):
+    def __init__(self, uc,ghidra_config, data_regs_list):
         # 配置项
-        self.uc = globs.uc
+        self.uc = uc
         self.shm_name = ""
         self.binary_file = ghidra_config['binary_file']
         self.avail_start_point = None # Save the avail pc which is read firstly by DR
         self.get_data_from_shared_memory = True # 通过返回值确定是否从共享内存中读取数据
         self.port = ghidra_config['port']
+        self.begitpoint_hook_handler = None
         self.debug = False
         
         # 寄存器信息
@@ -117,19 +118,21 @@ class EmulationHandler:
             self.shm_name = shm_name
     
     def recover_shm_and_add_dr_hook(self):
+        print("recover_shm_and_add_dr_hook")
+        
         # recover the shared memory
         self.read_from_shared_memory()
+        '''
         # 初始化的时候就hook所有的data_regs
         self.get_callind_addr()
         self.hook_all_data_regs()
         self.hook_all_indirect_call()
         
         #只用于第一轮，减少开销
-        if not self.get_data_from_shared_memory:
-            self.hook_all_status_regs()
         
         if not self.get_data_from_shared_memory:
             self.write_byte_to_data_reg(self.data_regs,[0xBB]*4)
+        '''
 
     def read_from_shared_memory(self):
         '''
