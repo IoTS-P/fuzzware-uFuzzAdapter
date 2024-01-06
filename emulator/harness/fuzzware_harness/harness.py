@@ -31,6 +31,25 @@ def unicorn_trace_syms(uc, pc, size=0, user_data=None):
         print(f" (PC={hex(pc)}, LR={hex(lr)})", flush=True)
         sys.stdout.flush()
 
+def hook_func_beginpoint(uc, address, size, user_data):
+    globs.emulation_handler.recover_shm_and_add_dr_hook()
+    uc.hook_del(globs.emulation_handler.begitpoint_hook_handler)
+    
+def configure_ufuzz_adapter_python(config,uc):
+        # uFuzzAdpter Python Start
+    from .uFuzzAdapterPython.emulation_handler import EmulationHandler
+    from unicorn import UC_HOOK_CODE
+    dr_list_path = config["data_regs_list_path"] 
+    f = open(dr_list_path, "r")
+    data_regs_list = []
+    for line in f.readlines():
+        line = line.strip()
+        data_regs_list.append(int(line.strip()))
+    e = EmulationHandler(uc,config,data_regs_list)
+    e.begitpoint_hook_handler =uc.hook_add(UC_HOOK_CODE, hook_func_beginpoint,config["entry_point"] - 1,config["entry_point"] | 1)
+    globs.emulation_handler = e
+    # uFuzzAdpter Python End
+
 def configure_unicorn(args):
     logger.info(f"Loading configuration in {str(args.config)}")
     config = load_config_deep(args.config)
@@ -313,17 +332,8 @@ def configure_unicorn(args):
     else:
         uc.gdb = None
     # native.register_beginpoint_hook(uc,config["entry_point"])
+    configure_ufuzz_adapter_python(config,uc)
 
-    # uFuzzAdpter Python Start
-    from .uFuzzAdapterPython.emulation_handler import EmulationHandler
-    dr_list_path = config["data_regs_list_path"] 
-    f = open(dr_list_path, "r")
-    data_regs_list = []
-    for line in f.readlines():
-        data_regs_list.append(line.strip())
-    
-    globs.emulation_handler = EmulationHandler(config,data_regs_list)
-    # uFuzzAdpter Python End
     return uc
 
 def sym_or_addr(x):
