@@ -193,3 +193,13 @@ def my_debug_log(message):
     # logging.debug(message)
     print(message)
     pass
+
+def uc_mem_read_offset_one_byte(uc,addr):
+    #读取一个字节的数据并转为int类型返回
+    offset = uc.mem_read(addr,1)
+    return int.from_bytes(offset,'little')
+
+def uc_mem_read_offset_four_byte(uc,addr):
+    #读取4个字节的数据并转为int类型返回
+    offset = uc.mem_read(addr,4)
+    return int.from_bytes(offset,'little')
