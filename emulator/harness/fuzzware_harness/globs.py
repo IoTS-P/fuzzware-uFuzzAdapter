@@ -1,5 +1,7 @@
 input_file_name = None
 debug_file_path = ""
+shm_name = ""
+emulation_handler = ""
 uc = None
 regions = {}
 

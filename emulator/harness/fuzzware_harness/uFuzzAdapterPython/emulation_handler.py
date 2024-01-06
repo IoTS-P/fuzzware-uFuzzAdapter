@@ -14,13 +14,13 @@ from unicorn.arm_const import (
     UC_ARM_REG_R0,
 )
 
-from ...exit import do_exit
-from ...utils import (
+from ..exit import do_exit
+from ..util import (
     my_debug_log,
     uc_mem_read_offset_four_byte,
     uc_mem_read_offset_one_byte,
 )
-from ... import globs
+from .. import globs
 from .data_tracker import DataTracker
 from .global_var import GlobalVar,find_longest_continuous_segment
 from .headless_ghidra import run_ghidra_script
@@ -29,19 +29,18 @@ from multiprocessing import shared_memory
 
 
 class EmulationHandler:
-    def __init__(self, ghidra_config, data_regs_list, status_regs_list):
+    def __init__(self, ghidra_config, data_regs_list):
         # 配置项
         self.uc = globs.uc
         self.shm_name = ""
-        self.binary_file = ghidra_config.binary_file
+        self.binary_file = ghidra_config['binary_file']
         self.avail_start_point = None # Save the avail pc which is read firstly by DR
         self.get_data_from_shared_memory = True # 通过返回值确定是否从共享内存中读取数据
-        self.port = ghidra_config.port
-        self.debug = True
+        self.port = ghidra_config['port']
+        self.debug = False
         
         # 寄存器信息
-        self.data_regs = list(copy.deepcopy(data_regs_list))
-        self.status_regs = list(status_regs_list)
+        self.data_regs = data_regs_list
         self.dr_remove_count = 0
         
         # dt相关变量 
@@ -195,27 +194,7 @@ class EmulationHandler:
                 begin=dr,
                 end=dr,
             )
-
-    def hook_all_status_regs(self):
-        #the self.status_regs may from last round of data
-        for sr in self.status_regs:
-            # 保留这个dict以防之后使用
-            my_debug_log("sr is {}".format(hex(sr)))
-            self.justify_sr_hook_dict[sr] = self.uc.hook_add(
-                UC_HOOK_MEM_READ_AFTER,
-                self.hook_func_status_regs_check,
-                begin=sr,
-                end=sr,
-            )
-            
-    #put the sr pc into the sr_dr_route when met the sr read
-    def hook_func_status_regs_check(self, uc, access, address, size, value, user_data):
-        pc = uc.reg_read(UC_ARM_REG_PC)
-        ipsr = uc.reg_read(UC_ARM_REG_IPSR)
-        if ipsr == 0:
-            self.sr_pc_dict[pc] = address
-            self.sr_dr_route.append(pc)
-        # my_debug_log("--------------met a sr pc at {}----------------".format(pc))
+        
     
 
     def hook_func_data_regs_check(self, uc, access, address, size, value, user_data):

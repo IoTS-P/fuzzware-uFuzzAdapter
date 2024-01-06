@@ -1,6 +1,6 @@
 # usage: GlobalVar class is used to track the global variable
 
-from ...utils import (
+from ..util import (
     uc_mem_read_offset_one_byte
 )
 class GlobalVar:
