@@ -16,7 +16,8 @@ uc_err add_beginpoint_hook(uc_engine *uc,uint64_t begin_point) {
 
 void beginpointHook(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
     // try to set fork_point_times related to user_input in the future
-    printf("beginpointHook");
+    printf("beginpointhook start!\n");
+
 
     // fuzzware_init()
 

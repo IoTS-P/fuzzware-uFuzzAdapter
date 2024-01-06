@@ -383,7 +383,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     _setup_prototype(native_lib, "add_debug_hooks", ctypes.c_int, uc_engine)
     
     # uFuzzAdapter
-    _setup_prototype(native_lib, "add_beginpoint_hook", ctypes.c_int, uc_engine,ctypes.c_uint64)
+    # _setup_prototype(native_lib, "add_beginpoint_hook", ctypes.c_int, uc_engine,ctypes.c_uint64)
 
     # TIMER
     # extern uint64_t get_global_ticker();

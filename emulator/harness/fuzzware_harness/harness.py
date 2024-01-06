@@ -311,7 +311,7 @@ def configure_unicorn(args):
         uc.gdb = GDBServer(uc, args.gdb_port)
     else:
         uc.gdb = None
-    native.register_beginpoint_hook(uc,config["entry_point"])
+    # native.register_beginpoint_hook(uc,config["entry_point"])
 
     return uc
 
