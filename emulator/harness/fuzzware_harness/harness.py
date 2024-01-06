@@ -314,6 +314,16 @@ def configure_unicorn(args):
         uc.gdb = None
     # native.register_beginpoint_hook(uc,config["entry_point"])
 
+    # uFuzzAdpter Python Start
+    from .uFuzzAdapterPython.emulation_handler import EmulationHandler
+    dr_list_path = config["data_regs_list_path"] 
+    f = open(dr_list_path, "r")
+    data_regs_list = []
+    for line in f.readlines():
+        data_regs_list.append(line.strip())
+    
+    globs.emulation_handler = EmulationHandler(config,data_regs_list)
+    # uFuzzAdpter Python End
     return uc
 
 def sym_or_addr(x):
@@ -362,6 +372,8 @@ def populate_parser(parser):
     parser.add_argument('--dumped-mmio-contexts', default='', help="Restrict the (pc, mmio_address) contexts for which to dump states for. Format: pc1:mmio1,pc2:mmio2,...,pcX:mmioX")
     parser.add_argument('--dumped-mmio-name-prefix', default='', help="Add a prefix to each generated MMIO state name for distinguishability")
 
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fuzzware emulation harness")
     populate_parser(parser)
@@ -386,6 +398,7 @@ def main():
 
     uc = configure_unicorn(args)
     globs.uc = uc
+
 
     logger.info(f"Passing control to native code to start emulation. Running for input file '{args.input_file}'")
     sys.stdout.flush()
