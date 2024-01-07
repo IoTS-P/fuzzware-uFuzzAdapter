@@ -33,6 +33,7 @@ class EmulationHandler:
         # 配置项
         self.uc = uc
         self.shm_name = ""
+        self.ghidra_config = ghidra_config
         self.binary_file = ghidra_config['binary_file']
         self.avail_start_point = None # Save the avail pc which is read firstly by DR
         self.get_data_from_shared_memory = True # 通过返回值确定是否从共享内存中读取数据
@@ -96,7 +97,6 @@ class EmulationHandler:
         self.interrupt_dr_hook_dict = {}
         self.indirect_call_hook_map = {}
         self.justify_dr_hook_dict = {}
-        self.justify_sr_hook_dict = {}      
         
         #计算buffer_len相关变量
         self.round = 0    # 用于估算buffer退出时机的参数
@@ -109,6 +109,8 @@ class EmulationHandler:
         self.sr_pc_dict = {} #每个SR所对应的PC
         self.sr_dr_route = [] # 保存SR到DR的路径PC
         
+
+        
         # if is debug, then read from shared memory file, so don't need to create shared memory
         if not self.debug:
             from uuid import uuid1
@@ -119,7 +121,8 @@ class EmulationHandler:
     
     def recover_shm_and_add_dr_hook(self):
         print("recover_shm_and_add_dr_hook")
-        
+        from ..native import get_fuzz
+        globs.user_input = get_fuzz(self.uc._uch,64)  # 保存用户输入的数据
         # recover the shared memory
         self.read_from_shared_memory()
         self.get_callind_addr()
@@ -375,9 +378,10 @@ class EmulationHandler:
         my_debug_log(
             ">>> enter the indirect hook, the src address is {}".format(hex(address))
         )
+        home_path = os.path.expanduser("~")
         # 打印r0-r1
         self.dynamic_hook_indirect_path = os.path.join(
-            os.path.dirname(globs.args.config_file), f"ghidra_project/{globs.config.port}_dynamic_hook_indirect_addr.txt"
+            home_path, f"ghidra_project/{self.port}_dynamic_hook_indirect_addr.txt"
         )
         # 调用capstone框架反汇编当前指令，并提取寄存器。并使用memread读取寄存器的值
         from capstone import Cs, CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB
@@ -982,7 +986,6 @@ class EmulationHandler:
                     pid = os.getpid()
                     my_debug_log("pid: %d" % pid)
                     # my_debug_log("Final consume_count: %d" % dt.consume_count)
-                    my_debug_log("fork_point_times: %d" % globs.config.fork_point_times)
                     
                     #第一轮退出前,或间接调用有更新时，更新dt
                     if self.get_data_from_shared_memory == False or self.indirect_remove_count > 0:
@@ -1058,7 +1061,6 @@ class EmulationHandler:
                     
                     self.write_to_shared_memory()
                     my_debug_log("Final consume_count: %d" % dt.consume_count)
-                    my_debug_log("fork_point_times: %d" % globs.config.fork_point_times)
                     do_exit(0)                        
                 else:
                     my_debug_log("read_flag = %d" % self.read_flag)
@@ -1160,7 +1162,7 @@ class EmulationHandler:
             self.port, ["global_static_data"],[
             self.tmp_dt.callread_pc,
             self.tmp_dt.read_pc,
-            globs.config.entry_point,
+            self.ghidra_config["entry_point"],
             self.tmp_dt.irq_pc,
             self.tmp_dt.buffer_addr,
             self.dynamic_hook_indirect_path]
@@ -1277,8 +1279,9 @@ class EmulationHandler:
             my_debug_log(main_dt)    
 
     def write_byte_to_data_reg(self, valid_dr,get_input):
-        from .rule import hardware_write_to_receive_buffer_list
-        hardware_write_to_receive_buffer_list(valid_dr, get_input, 4)
+        # from .rule import hardware_write_to_receive_buffer_list
+        # hardware_write_to_receive_buffer_list(valid_dr, get_input, 4)
+        print("write_byte_to_data_reg")
     
     def write_to_shared_memory(self):
         my_debug_log(">>> write_to_shared_memory")

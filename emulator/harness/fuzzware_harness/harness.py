@@ -18,7 +18,8 @@ from .user_hooks import (add_block_hook, add_func_hook,
 from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 from .uFuzzAdapterPython.headless_ghidra import run_ghidra
-logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+# logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG)
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -55,7 +56,7 @@ def configure_unicorn(args):
     config = load_config_deep(args.config)
     globs.debug_file_path = config['debug_file_path']
     # start ghidra thread
-    run_ghidra(config['binary_file'],config['port'])
+    
     native_lib_path = os.path.dirname(os.path.realpath(__file__))+'/native/native_hooks.so'
     print("native_lib_path: ",native_lib_path)
     if not os.path.exists(native_lib_path):
@@ -332,7 +333,8 @@ def configure_unicorn(args):
     else:
         uc.gdb = None
     # native.register_beginpoint_hook(uc,config["entry_point"])
-    configure_ufuzz_adapter_python(config,uc)
+    # run_ghidra(config['binary_file'],config['port'])
+    # configure_ufuzz_adapter_python(config,uc)
 
     return uc
 

@@ -546,7 +546,11 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type, uint64_t add
     struct bitextract_mmio_model_config *config = (struct bitextract_mmio_model_config *) user_data;
     uint64_t result_val = 0;
     uint64_t fuzzer_val = 0;
-
+    // write address to a file
+    FILE *fp;
+    fp = fopen("/tmp/addr.txt", "a");
+    fprintf(fp, "0107:%lx\n", addr);
+    fclose(fp);
     // TODO: this currently assumes little endianness on both sides to be correct
     if(get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
         return;

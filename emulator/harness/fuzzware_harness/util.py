@@ -191,7 +191,7 @@ def my_debug_log(message):
     # from .globs import debug_file_path
     # logging.basicConfig(level=logging.DEBUG, filename=debug_file_path, filemode='w+')
     # logging.debug(message)
-    print(message)
+    logging.debug(message)
     pass
 
 def uc_mem_read_offset_one_byte(uc,addr):
