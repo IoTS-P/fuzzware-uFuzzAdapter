@@ -19,13 +19,14 @@ port = int(args[0])
 # semu_fuzz_name = str(args[-2])
 # my_debug_log("port = ",port)
 # global_dict = globals()
-with open("/home/liyuweiheng/.local/lib/python3.10/site-packages/semu_fuzz/emulate/semu/static_analyze/Callind_Collect.py","r") as ccf,open("/home/liyuweiheng/.local/lib/python3.10/site-packages/semu_fuzz/emulate/semu/static_analyze/global_forward_slice_purely.py","r") as gfspf:
+now_path = os.path.dirname(__file__)
+with open(os.path.join(now_path, "static_analyze/Callind_Collect.py"), "r") as ccf,open(os.path.join(now_path, "static_analyze/global_forward_slice_purely.py"), "r") as gfspf:
     ccf_code = ccf.read()
     exec(ccf_code)
     gfspf_code = gfspf.read()
     exec(gfspf_code)
     my_debug_log("write success!")
-    my_debug_log("port = ",port)
+    my_debug_log("port = ", port)
     
 def run():
     my_debug_log("current_dir ={}".format(os.getcwd()))
