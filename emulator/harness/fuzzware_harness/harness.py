@@ -18,8 +18,8 @@ from .user_hooks import (add_block_hook, add_func_hook,
 from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 from .uFuzzAdapterPython.headless_ghidra import run_ghidra
-# logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
-logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+# logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG)
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -39,8 +39,11 @@ def hook_func_beginpoint(uc, address, size, user_data):
 def configure_ufuzz_adapter_python(config,uc):
         # uFuzzAdpter Python Start
     from .uFuzzAdapterPython.emulation_handler import EmulationHandler
+    from .native import get_dr_list_from_file
     from unicorn import UC_HOOK_CODE
+    
     dr_list_path = config["data_regs_list_path"] 
+    get_dr_list_from_file(config["data_regs_list_path"])
     f = open(dr_list_path, "r")
     data_regs_list = []
     for line in f.readlines():
@@ -333,8 +336,8 @@ def configure_unicorn(args):
     else:
         uc.gdb = None
     # native.register_beginpoint_hook(uc,config["entry_point"])
-    # run_ghidra(config['binary_file'],config['port'])
-    # configure_ufuzz_adapter_python(config,uc)
+    run_ghidra(config['binary_file'],config['port'])
+    configure_ufuzz_adapter_python(config,uc)
 
     return uc
 

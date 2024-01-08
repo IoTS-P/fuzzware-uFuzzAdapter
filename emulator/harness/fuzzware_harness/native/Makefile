@@ -1,15 +1,17 @@
 OWN_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+PYTHON_INC=$(shell python3-config --includes)
+PYTHON_LDFLAGS=$(shell python3-config --ldflags)
 UC_DIRNAME := fuzzware-unicorn
 
 LIBDIR = $(OWN_DIR)/../../../unicorn/$(UC_DIRNAME)/
-INC=-I$(OWN_DIR)/../../../unicorn/$(UC_DIRNAME)/include
+INC=-I$(OWN_DIR)/../../../unicorn/$(UC_DIRNAME)/include $(PYTHON_INC)
 BIN_EXT = .so
 
 CC = clang
 CXX := clang++ # Use clang++ for compiling C++ files
 CFLAGS += -fpic -Wall -Werror $(INC) -g -O3
 CXXFLAGS := $(CFLAGS) # Use the same flags for C++ by default, can be adjusted as needed
-LDFLAGS += -shared -L$(LIBDIR) -lunicorn
+LDFLAGS += -shared -L$(LIBDIR) -lunicorn $(PYTHON_LDFLAGS)
 
 .PHONY: all clean
 # Separate the C and C++ sources

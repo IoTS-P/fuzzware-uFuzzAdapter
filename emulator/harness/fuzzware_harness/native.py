@@ -323,6 +323,10 @@ def do_exit(uc, status, sig=-1):
     global native_lib
     native_lib.do_exit(uc._uch, status)
 
+def get_dr_list_from_file(file_path):
+    global native_lib
+    return native_lib.get_dr_list_from_file(file_path.encode())
+
 def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fuzz_consumption_timeout=DEFAULT_FUZZ_CONSUMPTION_TIMEOUT, instr_limit=DEFAULT_BASIC_BLOCK_LIMIT):
     global native_lib
     global mmio_cb_wrapper
@@ -412,6 +416,9 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     # Starting emulation
     # uc_err emulate(uc_engine *uc, char *input_path, char *prefix_input_path);
     _setup_prototype(native_lib, "emulate", ctypes.c_int, uc_engine, ctypes.c_char_p, ctypes.c_char_p)
+
+    # get dr list
+    _setup_prototype(native_lib, "get_dr_list_from_file", ctypes.c_void_p, ctypes.c_char_p)
 
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)
     mmio_region_starts_arr = (ctypes.c_int64 * len(mmio_region_starts))(*mmio_region_starts)

@@ -98,4 +98,7 @@ uc_err remove_function_handler_hook_address(uc_engine *uc, uint64_t address);
 uc_err register_cond_py_handler_hook(uc_engine *uc, uc_cb_hookcode_t py_callback, uint64_t *addrs, int num_addrs, void *user_data);
 
 uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path);
+bool is_dr(uint32_t address);
+void get_dr_list_from_file(char *path);
+void call_python_instance_method(uint64_t addr, uint32_t pc);
 #endif

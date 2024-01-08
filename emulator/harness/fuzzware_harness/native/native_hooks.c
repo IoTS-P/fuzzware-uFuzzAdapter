@@ -26,7 +26,8 @@
 #include <sys/shm.h>
 #include <sys/wait.h>
 #include <stdio.h>
-
+#include <stdbool.h>
+#include <Python.h>
 // 0. Constants
 // ~10 MB of preallocated fuzzing buffer size
 #define PREALLOCED_FUZZ_BUF_SIZE 10000000
@@ -113,6 +114,11 @@ uc_err custom_exit_reason = UC_ERR_OK;
 
 // Fuzzer coverage bitmap
 uint8_t coverage_bitmap[MAP_SIZE];
+
+// dr_list
+# define DR_LIST_SIZE 256
+uint8_t dr_list_index = 0;
+uint64_t dr_list[DR_LIST_SIZE];
 
 static void determine_input_mode() {
     char *id_str;
@@ -551,9 +557,18 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type, uint64_t add
     fp = fopen("/tmp/addr.txt", "a");
     fprintf(fp, "0107:%lx\n", addr);
     fclose(fp);
-    // TODO: this currently assumes little endianness on both sides to be correct
-    if(get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-        return;
+    // 在你的bitextract_mmio_model_handler函数中调用它
+    if(is_dr(addr)) {
+        uint32_t pc;
+        uc_reg_read(uc, UC_ARM_REG_PC, &pc); // 假设你已经定义了uc_reg_read函数
+        call_python_instance_method(addr, pc);
+        // ... 其他代码 ...
+    }
+    else{
+        // TODO: this currently assumes little endianness on both sides to be correct
+        if(get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+            return;
+        }
     }
 
     result_val = fuzzer_val << config->left_shift;
@@ -1190,3 +1205,96 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
 
     return UC_ERR_OK;
 }
+
+void get_dr_list_from_file(char *path){
+    FILE *fp;
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+    int i = 0;
+
+    fp = fopen(path, "r");
+    if (fp == NULL)
+        exit(EXIT_FAILURE);
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+        dr_list[i] = strtoul(line, NULL, 16);
+        i++;
+    }
+
+    fclose(fp);
+    if (line)
+        free(line);
+}
+
+bool is_dr(uint32_t address){
+    for (int i = 0; i < dr_list_index; i++){
+        if (address == dr_list[i]){
+            return true;
+        }
+    }
+    return false;
+}
+
+void call_python_instance_method(uint64_t addr, uint32_t pc) {
+    PyObject *pModule, *pDict, *pInstance, *pValue;
+
+    // 初始化Python解释器
+    Py_Initialize();
+
+    PyObject *pClass = PyObject_GetAttrString(pModule, "MyClass");
+    if (pClass == NULL) {
+        // Handle error...
+    }
+
+    // Now you can check if pInstance is an instance of MyClass
+    if (pInstance && PyObject_IsInstance(pInstance, pClass)) {
+        // pInstance is an instance of MyClass
+        // You can now safely call methods on pInstance
+        PyObject *pValue = PyObject_CallMethod(pInstance, "my_method", "(K)", addr);
+        if (pValue != NULL) {
+            printf("Result of call: %ld\n", PyLong_AsLong(pValue));
+            Py_DECREF(pValue);
+        } else {
+            PyErr_Print();
+        }
+    } else {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        fprintf(stderr, "pInstance is not an instance of MyClass\n");
+    }
+    
+    // 导入Python模块
+    pModule = PyImport_ImportModule("../globs");
+    if (pModule != NULL) {
+        // 获取模块字典并获取全局变量
+         // Include the header file that declares the PyModule_GetDict function
+        pDict = PyModule_GetDict(pModule);
+        pInstance = PyDict_GetItemString(pDict, "emulation_handler");
+
+        // 确保我们得到了正确的对象
+        if (pInstance && PyObject_IsInstance(pInstance, pClass)) {
+            // Call the method on the instance as before
+            pValue = PyObject_CallMethod(pInstance, "my_method", "(K)", addr);
+            if (pValue != NULL) {
+                printf("Result of call: %ld\n", PyLong_AsLong(pValue));
+                Py_DECREF(pValue);
+            } else {
+                PyErr_Print();
+            }
+        } else {
+            if (PyErr_Occurred())
+                PyErr_Print();
+            fprintf(stderr, "Cannot find instance my_instance\n");
+        }
+        Py_DECREF(pModule);
+    } else {
+        PyErr_Print();
+        fprintf(stderr, "Failed to load \"mymodule\"\n");
+    }
+    // 清理Python解释器
+    Py_Finalize();
+}
+
+
+
