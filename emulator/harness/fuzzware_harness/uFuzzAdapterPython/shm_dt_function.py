@@ -1,6 +1,6 @@
-import os,pickle,ctypes
+import os,pickle,ctypes,json
 my_debug_log = print
-def read_from_shared_memory(config,c_lib):
+def read_from_shm_json(config,c_lib):
     '''
     used to read data from shared memory
     '''
@@ -11,23 +11,12 @@ def read_from_shared_memory(config,c_lib):
     shm_file = None
     for root, dirs, files in os.walk(os.path.dirname(config["binary_file"])):
         for file in files:
-            if file.endswith("shared_memory.txt"):
+            if file.endswith(".json"):
                 shm_file = os.path.join(root, file)
                 break
-    with open(shm_file, "rb") as f:
-        emulation_handler_serialized_data = f.read()
-    
-    # check if the shared memory is empty
-    if emulation_handler_serialized_data == b"\x00" * len(
-        emulation_handler_serialized_data
-    ):
-        my_debug_log("Shared memory is empty or uninitialized.")
-        return
-    
-    # recover the data from shared memory
-    data_tracker_dict = pickle.loads(emulation_handler_serialized_data)
-    irq_dt_set = data_tracker_dict["irq_dt_set"]
-    main_dt_set = data_tracker_dict["main_dt_set"]
+    emulation_handler_serialized_data = json.load(open(shm_file, "r"))
+    irq_dt_set = emulation_handler_serialized_data["irq_dt_set"]
+    main_dt_set = emulation_handler_serialized_data["main_dt_set"]
     fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set)
     # call c function to save irq_dt_set and main_dt_set
     my_debug_log("Shared memory is read")
@@ -35,19 +24,19 @@ def read_from_shared_memory(config,c_lib):
 
 def convert_to_ctypes(dt_object):
     from .data_tracker import DataTracker
-    return DataTracker(
-        dr=0 if dt_object.dr is None else dt_object.dr,
-        callread_pc=0 if dt_object.callread_pc is None else dt_object.callread_pc,
-        read_pc=0 if dt_object.read_pc is None else dt_object.read_pc,
-        buffer_addr=0,
-        irq_pc=0,
-        avail_pc=0 if dt_object.avail_pc is None else dt_object.avail_pc,
-        rx_head=0,
-        rx_tail=0,
-        buffer_len=0,
-        buffer_min_len=0,
-        consume_count=0
-    )
+    dt = DataTracker()
+    dt.dr=0 if dt_object['dr'] is None else dt_object['dr']
+    dt.callread_pc=0 if dt_object['callread_pc'] is None else dt_object['callread_pc']
+    dt.read_pc=0 if dt_object['read_pc'] is None else dt_object['read_pc']
+    dt.buffer_addr=0 if dt_object['buffer_addr']  is None else dt_object['buffer_addr']
+    dt.irq_pc=0 if dt_object['irq_pc'] is None else dt_object['irq_pc']
+    dt.avail_pc=0 if dt_object['avail_pc'] is None else dt_object['avail_pc']
+    dt.rx_head=0 if dt_object['rx_head'] is None else dt_object['rx_head']
+    dt.rx_tail=0 if dt_object['rx_tail'] is None else dt_object['rx_tail']
+    dt.buffer_len=0 if dt_object['buffer_len'] is None else dt_object['buffer_len']
+    dt.buffer_min_len=0 if dt_object['buffer_min_len'] is None else dt_object['buffer_min_len']
+    dt.consume_count=0 if dt_object['consume_count'] is None else dt_object['consume_count']
+    return dt
 
 def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set):
     from .data_tracker import StructDataTracker

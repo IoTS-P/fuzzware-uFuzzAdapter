@@ -308,7 +308,9 @@ def configure_unicorn(args):
         uc.gdb = GDBServer(uc, args.gdb_port)
     else:
         uc.gdb = None
-
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json
+    from .native import native_lib
+    read_from_shm_json(config,native_lib)
     return uc
 
 def sym_or_addr(x):
