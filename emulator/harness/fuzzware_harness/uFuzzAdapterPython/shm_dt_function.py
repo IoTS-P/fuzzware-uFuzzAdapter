@@ -17,14 +17,14 @@ def read_from_shm_json(config,c_lib):
     emulation_handler_serialized_data = json.load(open(shm_file, "r"))
     irq_dt_set = emulation_handler_serialized_data["irq_dt_set"]
     main_dt_set = emulation_handler_serialized_data["main_dt_set"]
-    fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set)
+    # fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set)
     # call c function to save irq_dt_set and main_dt_set
     my_debug_log("Shared memory is read")
     my_debug_log("Recover dt hooks complete")
 
 def convert_to_ctypes(dt_object):
-    from .data_tracker import DataTracker
-    dt = DataTracker()
+    from .data_tracker import StructDataTracker
+    dt = StructDataTracker()
     dt.dr=0 if dt_object['dr'] is None else dt_object['dr']
     dt.callread_pc=0 if dt_object['callread_pc'] is None else dt_object['callread_pc']
     dt.read_pc=0 if dt_object['read_pc'] is None else dt_object['read_pc']
@@ -51,14 +51,17 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set):
     #short main_dt_array_index = 0;
     #short irq_dt_array_index = 0;
     main_dt_array_index = ctypes.c_short.from_address(
-        ctypes.addressof(c_lib.irq_dt_array)
+        ctypes.addressof(c_lib.main_dt_array_index)
     )
     irq_dt_array_index = ctypes.c_short.from_address(
-        ctypes.addressof(c_lib.irq_dt_array)
+        ctypes.addressof(c_lib.irq_dt_array_index)
     )
     # fill main_dt_array
     for i, get_dt in enumerate(main_dt_set):
+        # Assuming convert_to_ctypes returns a properly populated StructDataTracker instance
         dt = convert_to_ctypes(get_dt)
+        
+        # Directly assign the values without wrapping them in ctypes types
         main_dt_array[i].dr = dt.dr
         main_dt_array[i].callread_pc = dt.callread_pc
         main_dt_array[i].read_pc = dt.read_pc

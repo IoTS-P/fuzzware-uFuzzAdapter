@@ -117,8 +117,13 @@ uint8_t coverage_bitmap[MAP_SIZE];
 
 // 4. DataTracker declarations
 #define DATATRACKER_SIZE 100
-DataTracker main_dt_array[DATATRACKER_SIZE];
-DataTracker irq_dt_array[DATATRACKER_SIZE];
+extern DataTracker *main_dt_array;
+extern DataTracker *irq_dt_array;
+extern short main_dt_array_index;
+extern short irq_dt_array_index;
+DataTracker *main_dt_array = NULL;
+DataTracker *irq_dt_array = NULL;
+
 short main_dt_array_index = 0;
 short irq_dt_array_index = 0;
 
@@ -660,10 +665,10 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts, uint64_t
             mask >>= 1;
         }
 
-        #ifdef DEBUG
+        // #ifdef DEBUG
         printf("Registering bitextract model for range: [%x] %lx - %lx with size, left_shift: %d, %d. Mask: %08x, hw: %d\n", pcs[i], starts[i], ends[i], byte_sizes[i], left_shifts[i], masks[i], model_configs[i].mask_hamming_weight); fflush(stdout);
-        #endif
-
+        // #endif
+        
         if(add_mmio_subregion_handler(uc, bitextract_mmio_model_handler, starts[i], ends[i], pcs[i], &model_configs[i]) != UC_ERR_OK) {
             return UC_ERR_EXCEPTION;
         }
@@ -1022,6 +1027,7 @@ uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions, uint
 
     subscribe_state_snapshotting(uc, mmio_models_take_snapshot, mmio_models_restore_snapshot, mmio_models_discard_snapshot);
 
+    initialize_data_tracker_arrays();
     return UC_ERR_OK;
 }
 
@@ -1194,3 +1200,38 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
 
     return UC_ERR_OK;
 }
+
+
+void initialize_data_tracker_arrays() {
+    printf("Initializing data tracker arrays\n");
+    main_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
+    irq_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
+    // Check for NULL if allocation fails and handle it appropriately
+    if (!main_dt_array || !irq_dt_array) {
+        // Handle memory allocation error
+        // For example, you could print an error message and exit
+        fprintf(stderr, "Failed to allocate memory for data tracker arrays\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("Data tracker arrays initialized\n");
+}
+
+int fill_data_tracker_array(DataTracker *dt) {
+    main_dt_array[main_dt_array_index].avail_pc = dt->avail_pc;
+    main_dt_array[main_dt_array_index].irq_pc = dt->irq_pc;
+    main_dt_array[main_dt_array_index].buffer_addr = dt->buffer_addr;
+    main_dt_array[main_dt_array_index].buffer_len = dt->buffer_len;
+    main_dt_array[main_dt_array_index].buffer_min_len = dt->buffer_min_len;
+    main_dt_array[main_dt_array_index].callread_pc = dt->callread_pc;
+    main_dt_array[main_dt_array_index].dr = dt->dr;
+    main_dt_array[main_dt_array_index].rx_head = dt->rx_head;
+    main_dt_array[main_dt_array_index].rx_tail = dt->rx_tail;
+    main_dt_array[main_dt_array_index].consume_count = dt->consume_count;
+    main_dt_array[main_dt_array_index].read_pc = dt->read_pc;
+    main_dt_array_index++;
+    return 0;
+}
+
+// int ufuzz_adapter_add_avail_hook(){
+//     for(int i=0;i<)
+// }

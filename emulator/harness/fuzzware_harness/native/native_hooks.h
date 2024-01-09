@@ -4,7 +4,7 @@
 #include "unicorn/unicorn.h"
 #include "state_snapshotting.h"
 #include "uc_snapshot.h"
-
+#include "ufuzz_adapter/data_tracker.h"
 //#define DEBUG
 //#define DEBUG_STATE_RESTORE
 //#define DEBUG_SYSTICK
@@ -99,3 +99,7 @@ uc_err register_cond_py_handler_hook(uc_engine *uc, uc_cb_hookcode_t py_callback
 
 uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path);
 #endif
+
+
+void initialize_data_tracker_arrays();
+int fill_data_tracker_array(DataTracker *dt);
