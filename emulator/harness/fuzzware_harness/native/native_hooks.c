@@ -10,6 +10,7 @@
 #include "util.h"
 #include "timer.h"
 #include "core_peripherals/cortexm_nvic.h"
+#include "ufuzz_adapter/data_tracker.h"
 #include "interrupt_triggers.h"
 #include "state_snapshotting.h"
 #include "uc_snapshot.h"
@@ -113,6 +114,13 @@ uc_err custom_exit_reason = UC_ERR_OK;
 
 // Fuzzer coverage bitmap
 uint8_t coverage_bitmap[MAP_SIZE];
+
+// 4. DataTracker declarations
+#define DATATRACKER_SIZE 100
+DataTracker main_dt_array[DATATRACKER_SIZE];
+DataTracker irq_dt_array[DATATRACKER_SIZE];
+short main_dt_array_index = 0;
+short irq_dt_array_index = 0;
 
 static void determine_input_mode() {
     char *id_str;
