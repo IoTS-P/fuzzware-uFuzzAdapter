@@ -16,6 +16,7 @@ target (uc_mem_write)
 #include "ufuzz_adapter/data_tracker.h"
 #include "util.h"
 
+#include <stdbool.h>
 #include <unicorn/unicorn.h>
 
 #include <errno.h>
@@ -121,6 +122,10 @@ DataTracker *irq_dt_array = NULL;
 
 short main_dt_array_index = 0;
 short irq_dt_array_index = 0;
+int *random_split = NULL;
+size_t random_split_size = 0;
+short read_times = 0;
+short global_partion=0
 
 static void determine_input_mode() {
   char *id_str;
@@ -739,7 +744,23 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
       }
       mask >>= 1;
     }
-
+    int data_tracker_equal_mmio = 0;
+    for (int j = 0; j < main_dt_array_index; j++) {
+      if (main_dt_array[j].dr == pcs[i] &&
+          main_dt_array[j].read_pc == starts[i]) {
+        data_tracker_equal_mmio = 1;
+        break;
+      }
+    }
+    if(!data_tracker_equal_mmio){
+        for (int j = 0; j < irq_dt_array_index; j++) {
+            if (irq_dt_array[j].dr == pcs[i] &&
+                irq_dt_array[j].read_pc == starts[i]) {
+            data_tracker_equal_mmio = 1;
+            break;
+            }
+        }
+    }
     // #ifdef DEBUG
     printf("Registering bitextract model for range: [%x] %lx - %lx with size, "
            "left_shift: %d, %d. Mask: %08x, hw: %d\n",
@@ -747,11 +768,12 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
            model_configs[i].mask_hamming_weight);
     fflush(stdout);
     // #endif
-
-    if (add_mmio_subregion_handler(uc, bitextract_mmio_model_handler, starts[i],
-                                   ends[i], pcs[i],
-                                   &model_configs[i]) != UC_ERR_OK) {
-      return UC_ERR_EXCEPTION;
+    if (!data_tracker_equal_mmio) {
+      if (add_mmio_subregion_handler(uc, bitextract_mmio_model_handler,
+                                     starts[i], ends[i], pcs[i],
+                                     &model_configs[i]) != UC_ERR_OK) {
+        return UC_ERR_EXCEPTION;
+      }
     }
   }
 
@@ -1357,11 +1379,11 @@ void initialize_data_tracker_arrays() {
 }
 
 int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
-                            uint32_t read_pc, uint32_t buffer_addr,
-                            uint32_t irq_pc, uint32_t avail_pc,
-                            uint32_t rx_head, uint32_t rx_tail,
-                            short buffer_len, short buffer_min_len,
-                            short consume_count) {
+                                    uint32_t read_pc, uint32_t buffer_addr,
+                                    uint32_t irq_pc, uint32_t avail_pc,
+                                    uint32_t rx_head, uint32_t rx_tail,
+                                    short buffer_len, short buffer_min_len,
+                                    short consume_count) {
 
   main_dt_array[main_dt_array_index].dr = dr;
   main_dt_array[main_dt_array_index].callread_pc = callread_pc;
@@ -1379,13 +1401,12 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
   return 0;
 }
 
-
 int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
-                            uint32_t read_pc, uint32_t buffer_addr,
-                            uint32_t irq_pc, uint32_t avail_pc,
-                            uint32_t rx_head, uint32_t rx_tail,
-                            short buffer_len, short buffer_min_len,
-                            short consume_count) {
+                                   uint32_t read_pc, uint32_t buffer_addr,
+                                   uint32_t irq_pc, uint32_t avail_pc,
+                                   uint32_t rx_head, uint32_t rx_tail,
+                                   short buffer_len, short buffer_min_len,
+                                   short consume_count) {
 
   irq_dt_array[irq_dt_array_index].dr = dr;
   irq_dt_array[irq_dt_array_index].callread_pc = callread_pc;
@@ -1402,6 +1423,150 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array_index++;
   return 0;
 }
-// int ufuzz_adapter_add_avail_hook(){
-//     for(int i=0;i<)
-// }
+
+int ufuzz_adapter_add_avail_hook(uc_engine *uc){
+    for(int i=0;i<main_dt_array_index;i++){
+        if(main_dt_array[i].avail_pc!=0){
+            uc_hook avail_hook;
+            if (uc_hook_add(uc, &avail_hook, UC_HOOK_CODE, &main_proc_avail_hook_handler, NULL, main_dt_array[i].avail_pc, main_dt_array[i].avail_pc) != UC_ERR_OK) {
+                perror("Could not add avail hook\n");
+                return -1;
+            }
+        }
+    }
+    for(int i=0;i<irq_dt_array_index;i++){
+        if(irq_dt_array[i].avail_pc!=0){
+            uc_hook irq_hook;
+            if (uc_hook_add(uc, &irq_hook, UC_HOOK_CODE, &irq_avail_hook_handler, NULL, irq_dt_array[i].avail_pc, irq_dt_array[i].avail_pc) != UC_ERR_OK) {
+                perror("Could not add avail hook\n");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data){
+    // uint32_t dr;
+    // uc_reg_read(uc, UC_ARM_REG_R0, &dr);
+    // for(int i=0;i<main_dt_array_index;i++){
+    //     if(main_dt_array[i].dr==dr){
+    //         main_dt_array[i].avail_pc=0;
+    //         break;
+    //     }
+    // }
+    return UC_ERR_OK;
+
+}
+
+uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data){
+    if(read_times ==0 || (read_times !=0 && read_times % global_partion == 0) || () )
+    return UC_ERR_OK;
+
+}
+
+int get_current_partition(DataTracker *dt) {
+    // Generate the latest random partition
+    random_split_data_input(dt);
+    
+    int partition = 0;
+    if (random_split_size == 1) {
+        partition = random_split[0];
+        printf("current partition = %d", partition);
+    } else if (random_split_size > 1) {
+        partition = random_split[random_split_size - 1] - random_split[random_split_size - 2];
+        printf("current partition = %d", partition);
+    }
+    
+    // Assuming 'printf' can handle printing an array of integers.
+    printf("current random_split = ..."); // Implement array printing logic
+    return partition;
+}
+
+int random_split_data_input(DataTracker *dt) {
+    if (random_split_size == 0) {
+        random_split = malloc(sizeof(int));
+        random_split[0] = 0;
+        random_split_size = 1;
+    }
+    
+    int index = random_split[random_split_size - 1];
+    
+    if (index >= fuzz_size) {
+        return;
+    }
+    
+    if (dt->buffer_len) {
+        int threshold = 1;
+        if (dt->buffer_min_len != 0 && dt->buffer_min_len > 1) {
+            threshold = (dt->buffer_min_len > 4) ? dt->buffer_min_len : 4;
+        }
+        // Resize the random_split array to accommodate the new element
+        random_split = realloc(random_split, (random_split_size + 1) * sizeof(int));
+        random_split[random_split_size] = random_split_algorithm(index, dt->buffer_len, threshold);
+        random_split_size++;
+    }
+    return 0;
+}
+
+int random_split_algorithm(int index, int ceil, int threshold) {
+    int remaining_sum = fuzz_size - random_split[random_split_size - 1];
+    unsigned char seed = fuzz[index];
+    int start = threshold;
+    int end = (remaining_sum < ceil) ? remaining_sum : ceil;
+    
+    if (start == end) {
+        return remaining_sum + index;
+    }
+    
+    int random_value = start + seed % (end - start);
+    return random_value + index;
+}
+
+uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data){
+    read_times++;
+    return UC_ERR_OK;
+}
+
+    //用于检测是否存在头尾指针并且判断是否相等
+bool is_head_tail_equal(void *uc, DataTracker *dt) {
+    if (dt->rx_head == 0 || dt->rx_tail == 0) {
+        return false;
+    }
+    
+    short head_byte;
+    short tail_byte;
+    
+    // Assuming 'uc_mem_read_offset_one_byte' returns 0 on success and fills the provided byte pointer with the read value.
+    if (uc_mem_read_offset_one_byte(uc, dt->rx_head) != 0 ||
+        uc_mem_read_offset_one_byte(uc, dt->rx_tail) != 0) {
+        // Handle error, for example, by logging or returning false
+        return false;
+    }
+    head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+    tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+    
+    int head_offset = head_byte % dt->buffer_len;
+    int tail_offset = tail_byte % dt->buffer_len;
+    
+    return head_offset == tail_offset;
+}
+
+int uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr) {
+    uint8_t offset; // To store the byte read from memory
+    uc_err err;
+
+    // Attempt to read 1 byte from the given address into 'offset'.
+    err = uc_mem_read(uc, addr, &offset, sizeof(offset));
+
+    // Check if the read was successful
+    if (err) {
+        // Handle the error. For example, you could print an error message and exit,
+        // or you could return a special error code. Here, we'll just return -1.
+        fprintf(stderr, "Failed to read memory at address 0x%" PRIx64 "\n", addr);
+        return -1;
+    }
+
+    // If successful, return the byte as an integer.
+    return (int)offset;
+}

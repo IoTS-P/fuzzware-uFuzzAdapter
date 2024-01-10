@@ -263,7 +263,10 @@ def configure_unicorn(args):
     global_timer_scale = config['global_timer_scale'] if 'global_timer_scale' in config else 1
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
-
+    # Data Tracker Setup here
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json
+    from .native import native_lib
+    read_from_shm_json(config,native_lib)
     # MMIO modeling and listener setup
     parse_mmio_model_config(uc, config)
   
@@ -308,9 +311,7 @@ def configure_unicorn(args):
         uc.gdb = GDBServer(uc, args.gdb_port)
     else:
         uc.gdb = None
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json
-    from .native import native_lib
-    read_from_shm_json(config,native_lib)
+
     return uc
 
 def sym_or_addr(x):

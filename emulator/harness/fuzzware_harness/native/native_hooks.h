@@ -108,3 +108,12 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
                             uint32_t rx_head, uint32_t rx_tail,
                             short buffer_len, short buffer_min_len,
                             short consume_count);
+uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data);
+uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data);
+uc_err ufuzz_adapter_add_avail_hook(uc_engine *uc);
+int get_current_partition(DataTracker *dt);
+int random_split_data_input(DataTracker *dt);
+int random_split_algorithm(int index, int ceil, int threshold);
+uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size, void *user_data);
+bool is_head_tail_equal(void *uc, DataTracker *dt);
+int uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr);
