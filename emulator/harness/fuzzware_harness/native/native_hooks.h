@@ -102,7 +102,7 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path);
 
 
 void initialize_data_tracker_arrays();
-int fill_data_tracker_array(uint32_t dr, uint32_t callread_pc,
+int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
                             uint32_t read_pc, uint32_t buffer_addr,
                             uint32_t irq_pc, uint32_t avail_pc,
                             uint32_t rx_head, uint32_t rx_tail,

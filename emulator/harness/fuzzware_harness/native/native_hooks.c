@@ -1356,7 +1356,7 @@ void initialize_data_tracker_arrays() {
   printf("Data tracker arrays initialized\n");
 }
 
-int fill_data_tracker_array(uint32_t dr, uint32_t callread_pc,
+int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
                             uint32_t read_pc, uint32_t buffer_addr,
                             uint32_t irq_pc, uint32_t avail_pc,
                             uint32_t rx_head, uint32_t rx_tail,
@@ -1379,6 +1379,29 @@ int fill_data_tracker_array(uint32_t dr, uint32_t callread_pc,
   return 0;
 }
 
+
+int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
+                            uint32_t read_pc, uint32_t buffer_addr,
+                            uint32_t irq_pc, uint32_t avail_pc,
+                            uint32_t rx_head, uint32_t rx_tail,
+                            short buffer_len, short buffer_min_len,
+                            short consume_count) {
+
+  irq_dt_array[irq_dt_array_index].dr = dr;
+  irq_dt_array[irq_dt_array_index].callread_pc = callread_pc;
+  irq_dt_array[irq_dt_array_index].read_pc = read_pc;
+  irq_dt_array[irq_dt_array_index].buffer_addr = buffer_addr;
+  irq_dt_array[irq_dt_array_index].irq_pc = irq_pc;
+  irq_dt_array[irq_dt_array_index].avail_pc = avail_pc;
+  irq_dt_array[irq_dt_array_index].rx_head = rx_head;
+  irq_dt_array[irq_dt_array_index].rx_tail = rx_tail;
+  irq_dt_array[irq_dt_array_index].buffer_len = buffer_len;
+  irq_dt_array[irq_dt_array_index].buffer_min_len = buffer_min_len;
+  irq_dt_array[irq_dt_array_index].consume_count = consume_count;
+
+  irq_dt_array_index++;
+  return 0;
+}
 // int ufuzz_adapter_add_avail_hook(){
 //     for(int i=0;i<)
 // }

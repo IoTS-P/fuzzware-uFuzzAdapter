@@ -42,62 +42,17 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set):
         for i, get_dt in enumerate(main_dt_set):
         # Assuming convert_to_ctypes returns a properly populated StructDataTracker instance
             dt = convert_to_ctypes(get_dt)
-            res = c_lib.fill_data_tracker_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
+            res = c_lib.fill_data_tracker_main_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
             if res != 0:
                 my_debug_log("fill_data_tracker_array error")
                 return
             else:
                 my_debug_log("fill_data_tracker_array success")
-
-    # from .data_tracker import StructDataTracker
-    #     # 获取全局数组的引用
-    # ARRAY_SIZE = 100
-    # main_dt_array = (StructDataTracker * ARRAY_SIZE).from_address(
-    #     ctypes.addressof(c_lib.main_dt_array)
-    # )
-    # irq_dt_array = (StructDataTracker * ARRAY_SIZE).from_address(
-    #     ctypes.addressof(c_lib.irq_dt_array)
-    # )
-    # #short main_dt_array_index = 0;
-    # #short irq_dt_array_index = 0;
-    # main_dt_array_index = ctypes.c_short.from_address(
-    #     ctypes.addressof(c_lib.main_dt_array_index)
-    # )
-    # irq_dt_array_index = ctypes.c_short.from_address(
-    #     ctypes.addressof(c_lib.irq_dt_array_index)
-    # )
-    # # fill main_dt_array
-    # for i, get_dt in enumerate(main_dt_set):
-    #     # Assuming convert_to_ctypes returns a properly populated StructDataTracker instance
-    #     dt = convert_to_ctypes(get_dt)
-        
-    #     # Directly assign the values without wrapping them in ctypes types
-    #     main_dt_array[i].dr = dt.dr
-    #     main_dt_array[i].callread_pc = dt.callread_pc
-    #     main_dt_array[i].read_pc = dt.read_pc
-    #     main_dt_array[i].buffer_addr = dt.buffer_addr
-    #     main_dt_array[i].irq_pc = dt.irq_pc
-    #     main_dt_array[i].avail_pc = dt.avail_pc
-    #     main_dt_array[i].rx_head = dt.rx_head
-    #     main_dt_array[i].rx_tail = dt.rx_tail
-    #     main_dt_array[i].buffer_len = dt.buffer_len
-    #     main_dt_array[i].buffer_min_len = dt.buffer_min_len
-    #     main_dt_array[i].consume_count = dt.consume_count
-    #     main_dt_array_index.value = i
-    # # fill irq_dt_array
-    # for i, get_dt in enumerate(irq_dt_set):
-    #     dt = convert_to_ctypes(get_dt)
-    #     irq_dt_array[i].dr = dt.dr
-    #     irq_dt_array[i].callread_pc = dt.callread_pc
-    #     irq_dt_array[i].read_pc = dt.read_pc
-    #     irq_dt_array[i].buffer_addr = dt.buffer_addr
-    #     irq_dt_array[i].irq_pc = dt.irq_pc
-    #     irq_dt_array[i].avail_pc = dt.avail_pc
-    #     irq_dt_array[i].rx_head = dt.rx_head
-    #     irq_dt_array[i].rx_tail = dt.rx_tail
-    #     irq_dt_array[i].buffer_len = dt.buffer_len
-    #     irq_dt_array[i].buffer_min_len = dt.buffer_min_len
-    #     irq_dt_array[i].consume_count = dt.consume_count
-    #     irq_dt_array_index.value = i
-    
-    # return
+        for i, get_dt in enumerate(irq_dt_set):
+            dt = convert_to_ctypes(get_dt)
+            res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
+            if res != 0:
+                my_debug_log("fill_data_tracker_array error")
+                return
+            else:
+                my_debug_log("fill_data_tracker_array success")
