@@ -406,6 +406,14 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     # uc_err emulate(uc_engine *uc, char *input_path, char *prefix_input_path);
     _setup_prototype(native_lib, "emulate", ctypes.c_int, uc_engine, ctypes.c_char_p, ctypes.c_char_p)
 
+    # uFuzzAdpter
+    # int fill_data_tracker_array(uint32_t dr, uint32_t callread_pc,
+                            # uint32_t read_pc, uint32_t buffer_addr,
+                            # uint32_t irq_pc, uint32_t avail_pc,
+                            # uint32_t rx_head, uint32_t rx_tail,
+                            # short buffer_len, short buffer_min_len,
+                            # short consume_count);
+    _setup_prototype(native_lib, "fill_data_tracker_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short)
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)
     mmio_region_starts_arr = (ctypes.c_int64 * len(mmio_region_starts))(*mmio_region_starts)
     mmio_region_ends_arr = (ctypes.c_int64 * len(mmio_region_ends))(*mmio_region_ends)

@@ -1,5 +1,7 @@
-#include <stdint.h>
 
+#include <stdint.h>
+#ifndef DATA_TRACKER_H
+#define DATA_TRACKER_H
 // 定义DataTracker结构体
 typedef struct DataTracker {
     uint32_t dr; // 数据寄存器的地址
@@ -15,3 +17,5 @@ typedef struct DataTracker {
     short buffer_min_len; // 缓冲区最小长度
     short consume_count; // 消费计数
 } DataTracker;
+
+#endif
