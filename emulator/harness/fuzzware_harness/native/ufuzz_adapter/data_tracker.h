@@ -16,6 +16,7 @@ typedef struct DataTracker {
     short buffer_len; // 缓冲区长度
     short buffer_min_len; // 缓冲区最小长度
     short consume_count; // 消费计数
+    short irq_num;
 } DataTracker;
 
 #endif
