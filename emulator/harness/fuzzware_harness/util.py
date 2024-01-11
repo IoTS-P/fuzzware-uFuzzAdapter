@@ -186,3 +186,6 @@ def load_config_deep(path):
     if config is None:
         return {}
     return resolve_config_includes(config, path)
+
+def my_debug_log(msg):
+    logger.debug(msg)

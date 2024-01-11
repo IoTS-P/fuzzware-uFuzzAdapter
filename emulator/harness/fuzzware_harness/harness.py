@@ -4,7 +4,7 @@ import os
 import sys
 import logging
 
-from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc)
+from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
 
 from . import interrupt_triggers, native, timer, user_hooks,globs
@@ -17,7 +17,8 @@ from .user_hooks import (add_block_hook, add_func_hook,
 from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 
-logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+# logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG)
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -157,7 +158,6 @@ def configure_unicorn(args):
             if region.get('is_entry') == True:
                 vtor = start
                 logger.debug(f"setting vtor: {vtor:#x}")
-
                 entry_image_base = start + (region.get('ivt_offset') or 0)
                 logger.info(f"Found entry_image_base: 0x{entry_image_base:08x}")
     globs.regions = regions
@@ -264,9 +264,12 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,basicblock_hook
     from .native import native_lib
-    read_from_shm_json(config,native_lib)
+    read_from_shm_json(config,native_lib,vtor)
+    # uc.hook_add(UC_HOOK_BLOCK, basicblock_hook)
+    native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
+    # Data Tracker Setup end here
     # MMIO modeling and listener setup
     parse_mmio_model_config(uc, config)
   
