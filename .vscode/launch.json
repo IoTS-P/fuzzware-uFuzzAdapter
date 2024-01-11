@@ -20,6 +20,40 @@
             //   "-d",
             //   "3"
             ]
+          },
+          {
+            "name": "fuzzware-Gateay",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+              "emu",
+              "-c",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Gateway/config.yml",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Gateway/base_inputs/ex7_new",
+              
+            //   "-d",
+            //   "3"
+            ]
+          },
+          {
+            "name": "fuzzware-PLC",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+              "emu",
+              "-c",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/PLC/config.yml",
+              "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/PLC/base_inputs/modbus_cmd3",
+              
+            //   "-d",
+            //   "3"
+            ]
           }
     ]
 }
