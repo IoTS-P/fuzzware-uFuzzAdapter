@@ -1,6 +1,6 @@
 import os,pickle,ctypes,json
-my_debug_log = print
-def read_from_shm_json(config,c_lib):
+from ..util import my_debug_log
+def read_from_shm_json(config,c_lib,vtor):
     '''
     used to read data from shared memory
     '''
@@ -17,7 +17,7 @@ def read_from_shm_json(config,c_lib):
     emulation_handler_serialized_data = json.load(open(shm_file, "r"))
     irq_dt_set = emulation_handler_serialized_data["irq_dt_set"]
     main_dt_set = emulation_handler_serialized_data["main_dt_set"]
-    fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set)
+    fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor)
     # call c function to save irq_dt_set and main_dt_set
     my_debug_log("Shared memory is read")
     my_debug_log("Recover dt hooks complete")
@@ -38,21 +38,28 @@ def convert_to_ctypes(dt_object):
     dt.consume_count=0 if dt_object['consume_count'] is None else dt_object['consume_count']
     return dt
 
-def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set):
-        for i, get_dt in enumerate(main_dt_set):
-        # Assuming convert_to_ctypes returns a properly populated StructDataTracker instance
-            dt = convert_to_ctypes(get_dt)
-            res = c_lib.fill_data_tracker_main_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
-            if res != 0:
-                my_debug_log("fill_data_tracker_array error")
-                return
-            else:
-                my_debug_log("fill_data_tracker_array success")
-        for i, get_dt in enumerate(irq_dt_set):
-            dt = convert_to_ctypes(get_dt)
-            res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
-            if res != 0:
-                my_debug_log("fill_data_tracker_array error")
-                return
-            else:
-                my_debug_log("fill_data_tracker_array success")
+def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
+    for i, get_dt in enumerate(main_dt_set):
+    # Assuming convert_to_ctypes returns a properly populated StructDataTracker instance
+        dt = convert_to_ctypes(get_dt)
+        res = c_lib.fill_data_tracker_main_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count)
+        if res != 0:
+            my_debug_log("fill_data_tracker_array error")
+            return
+        else:
+            my_debug_log("fill_data_tracker_array success")
+    for i, get_dt in enumerate(irq_dt_set):
+        
+        dt = convert_to_ctypes(get_dt)
+        vector_num = (dt.irq_pc-vtor)/4
+        print("irq_pc:{},vtor:{},vector_num:{}".format(dt.irq_pc,vtor,vector_num))
+        res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count,vtor)
+        if res != 0:
+            my_debug_log("fill_data_tracker_array error")
+            return
+        else:
+            my_debug_log("fill_data_tracker_array success")
+            
+
+def basicblock_hook(uc, address, size, user_data):
+    my_debug_log("address:0x{:x},size:0x{:x}".format(address,size))
