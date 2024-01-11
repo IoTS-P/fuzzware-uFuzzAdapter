@@ -365,7 +365,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     _setup_prototype(native_lib, "register_value_set_mmio_models", ctypes.c_int, uc_engine, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
 
     # NVIC
-    # extern uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts);
+    # extern uc_err init_(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t interrupt_limit, uint32_t num_disabled_interrupts, uint32_t *disabled_interrupts);
     _setup_prototype(native_lib, "init_nvic", ctypes.c_int, uc_engine, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
     # extern void nvic_set_pending(int num)
     _setup_prototype(native_lib, "nvic_set_pending", ctypes.c_int, ctypes.c_int)
@@ -414,7 +414,10 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
                             # short buffer_len, short buffer_min_len,
                             # short consume_count);
     _setup_prototype(native_lib, "fill_data_tracker_main_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short)
-    _setup_prototype(native_lib, "fill_data_tracker_irq_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short)
+    _setup_prototype(native_lib, "fill_data_tracker_irq_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short,ctypes.c_uint32)
+    #ufuzz_adapter_add_avail_hook(uc_engine *uc)
+    _setup_prototype(native_lib, "ufuzz_adapter_add_avail_hook", ctypes.c_int, uc_engine)
+    
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)
     mmio_region_starts_arr = (ctypes.c_int64 * len(mmio_region_starts))(*mmio_region_starts)
     mmio_region_ends_arr = (ctypes.c_int64 * len(mmio_region_ends))(*mmio_region_ends)
