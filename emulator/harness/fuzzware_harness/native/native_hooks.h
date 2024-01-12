@@ -21,6 +21,8 @@ extern int do_print_exit_info;
 extern uint32_t num_mmio_regions;
 extern uint64_t *mmio_region_starts;
 extern uint64_t *mmio_region_ends;
+extern short blocklist_interrupt[64];
+extern short blocklist_interrupt_index;
 
 struct linear_mmio_model_config {
   uint32_t step;
@@ -149,9 +151,10 @@ int random_split_algorithm(int index, int ceil, int threshold);
 uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc,
                                         uint32_t size, void *user_data);
 bool is_head_tail_equal(void *uc, DataTracker *dt);
+bool head_tail_is_not_zero(void *uc, DataTracker *dt);
 short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr);
 int fill_data(DataTracker *dt, size_t container_len,uc_engine *uc) ;
-int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, size_t len,uc_engine *uc);
+int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,uc_engine *uc);
 void my_debug_log(const char *format);
 int get_match_irq_num(uc_engine *uc,uint32_t irq_pc);
 #endif

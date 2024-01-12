@@ -17,6 +17,12 @@ typedef struct DataTracker {
     short buffer_min_len; // 缓冲区最小长度
     short consume_count; // 消费计数
     short irq_num;
+    // fifo设置，fifo长度
+    uint8_t fifo[64]; // FIFO队列存储，64字节
+    uint32_t fifo_head; // FIFO队列的头部索引
+    uint32_t fifo_tail; // FIFO队列的尾部索引
+    uint32_t fifo_count; // FIFO队列中的数据长度
+    bool can_write;
 } DataTracker;
 
 #endif

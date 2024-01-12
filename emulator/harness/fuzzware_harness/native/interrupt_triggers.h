@@ -11,7 +11,7 @@
 #define IRQ_TRIGGER_MODE_TIME 1
 #define IRQ_TRIGGER_MODE_TIME_FUZZED 2
 
-#define IRQ_DEFAULT_TIMER_INTERVAL 1000
+#define IRQ_DEFAULT_TIMER_INTERVAL 1000000
 
 typedef struct InterruptTrigger {
     uc_hook hook_handle;

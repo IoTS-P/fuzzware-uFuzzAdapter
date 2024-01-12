@@ -51,8 +51,6 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
     for i, get_dt in enumerate(irq_dt_set):
         
         dt = convert_to_ctypes(get_dt)
-        vector_num = (dt.irq_pc-vtor)/4
-        print("irq_pc:{},vtor:{},vector_num:{}".format(dt.irq_pc,vtor,vector_num))
         res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count,vtor)
         if res != 0:
             my_debug_log("fill_data_tracker_array error")
