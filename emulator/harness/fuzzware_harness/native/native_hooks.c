@@ -1423,7 +1423,6 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].buffer_len = buffer_len;
   irq_dt_array[irq_dt_array_index].buffer_min_len = buffer_min_len;
   irq_dt_array[irq_dt_array_index].irq_num = 0;
-  irq_dt_array[irq_dt_array_index].fifo_count = 0;
   irq_dt_array[irq_dt_array_index].fifo_head = 0;
   irq_dt_array[irq_dt_array_index].fifo_tail = 0;
   vtor_num = vtor;
@@ -1477,14 +1476,12 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
   my_debug_log("irq_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
-  if(dt->expectedInputData != dt->actualInputData){
+  if (dt->fifo_head != dt->fifo_tail) {
     short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->head_offset);
     // 计算差值作为实际输入的字节数
     short sub_res = cur_head_offset - dt->head_offset;
     // 实到人数加上实际输入的字节数
-    dt->actualInputData += sub_res;
     dt->fifo_tail += sub_res;
-    dt->fifo_count = dt->fifo_head - dt->fifo_tail;
     dt->head_offset = cur_head_offset;
     global_partion += sub_res;
   }
@@ -1493,7 +1490,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   }
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
-  if (dt->fifo_count != 0) {
+  if (dt->fifo_head != dt->fifo_tail) {
     write_byte_to_data_reg(dt, fuzz, 4, uc);
     return UC_ERR_OK;
   } else {
@@ -1631,29 +1628,40 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
   int write_len = 0;
-  if (dt->fifo_count != 0) {
+  short sub_res = dt->fifo_head - dt->fifo_tail;
+  if (sub_res != 0) {
     my_debug_log("fifo data not empty\n");
 
     // 先把fifo中的数据写入到dr中，最大长度为4，否则就取fifo中数据的长度
-    write_len = (dt->fifo_count > 4) ? 4 : dt->fifo_count;
-    uc_mem_write(uc, dt->dr, fuzz+dt->fifo_tail, write_len);
+    write_len = (sub_res > 4) ? 4 : sub_res;
+    uc_mem_write(uc, dt->dr, dt->fifo+dt->fifo_tail, write_len);
     for (int i = 0; i < write_len; i++) {
       nvic_set_pending(uc, dt->irq_num, true);
     }
-    dt->fifo_count -= write_len;
-    fuzz_cursor += write_len;
     return write_len;
   } else {
-
+    memcpy(dt->fifo, data, len);
+    if (len > 4) {
       write_len = 4;
-      dt->fifo_head += len;
-    my_debug_log("write_byte_to_data_reg\n");
-    uc_mem_write(uc, dt->dr, fuzz+dt->fifo_tail, 4);
-    for (int i = 0; i < write_len; i++) {
-      nvic_set_pending(uc, dt->irq_num, true);
+      dt->fifo_head = len;
+      dt->fifo_tail = 0;
+      my_debug_log("write_byte_to_data_reg\n");
+      uc_mem_write(uc, dt->dr, data, 4);
+      for (int i = 0; i < write_len; i++) {
+        nvic_set_pending(uc, dt->irq_num, true);
+      }
+    } else {
+      write_len = len;
+      dt->fifo_head = len;
+      dt->fifo_tail = 0;
+      uc_mem_write(uc, dt->dr, data, write_len);
+      for (int i = 0; i < write_len; i++) {
+        nvic_set_pending(uc, dt->irq_num, true);
+      }
     }
+    dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+    return write_len;
   }
-  return write_len;
 }
 
 void my_debug_log(const char *format) {

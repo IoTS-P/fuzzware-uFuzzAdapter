@@ -1,4 +1,5 @@
 
+#include <cstdint>
 #include <stdint.h>
 #ifndef DATA_TRACKER_H
 #define DATA_TRACKER_H
@@ -16,12 +17,10 @@ typedef struct DataTracker {
     short buffer_len; // 缓冲区长度
     short buffer_min_len; // 缓冲区最小长度
     short irq_num;
-    short expectedInputData; // 应到人数
-    short actualInputData; // 实到人数
     // fifo设置，头尾指针指向fuzz的数据
+    uint8_t fifo[512];
     short fifo_head;
     short fifo_tail;
-    short fifo_count; // FIFO队列中的数据长度
 } DataTracker;
 
 #endif
