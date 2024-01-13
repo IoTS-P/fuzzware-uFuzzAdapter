@@ -151,7 +151,6 @@ int random_split_algorithm(int index, int ceil, int threshold);
 uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc,
                                         uint32_t size, void *user_data);
 bool is_head_tail_equal(void *uc, DataTracker *dt);
-bool head_tail_is_not_zero(void *uc, DataTracker *dt);
 short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr);
 int fill_data(DataTracker *dt, size_t container_len,uc_engine *uc) ;
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,uc_engine *uc);

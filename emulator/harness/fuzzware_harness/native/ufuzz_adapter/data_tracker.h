@@ -15,14 +15,13 @@ typedef struct DataTracker {
     short head_offset;
     short buffer_len; // 缓冲区长度
     short buffer_min_len; // 缓冲区最小长度
-    short consume_count; // 消费计数
     short irq_num;
     short expectedInputData; // 应到人数
     short actualInputData; // 实到人数
-    // fifo设置，fifo长度
-    uint8_t fifo[64]; // FIFO队列存储，64字节
-    uint32_t fifo_count; // FIFO队列中的数据长度
-    bool can_write;
+    // fifo设置，头尾指针指向fuzz的数据
+    short fifo_head;
+    short fifo_tail;
+    short fifo_count; // FIFO队列中的数据长度
 } DataTracker;
 
 #endif
