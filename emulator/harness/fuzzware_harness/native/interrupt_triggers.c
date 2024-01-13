@@ -116,12 +116,6 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
 
         // Perform the actual pending
         if(trigger->irq) {
-            for(int i=0;i<blocklist_interrupt_index;i++){
-                if(blocklist_interrupt[i] == trigger->irq){
-                    my_debug_log("黑名单中，退出\n");
-                    return;
-                }
-            }
             nvic_set_pending(uc, trigger->irq, false);
             ++trigger->curr_pends;
         }

@@ -616,13 +616,8 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   uint64_t fuzzer_val = 0;
 
   // TODO: this currently assumes little endianness on both sides to be correct
-  // if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-  //   return;
-  // }
-  // 生成config->byte_size大小的随机数
-  for (int i = 0; i < config->byte_size; i++) {
-    fuzzer_val = fuzzer_val << 8;
-    fuzzer_val += rand() % 256;
+  if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+    return;
   }
   result_val = fuzzer_val << config->left_shift;
   uc_mem_write(uc, addr, &result_val, size);
@@ -1428,10 +1423,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].rx_tail = rx_tail;
   irq_dt_array[irq_dt_array_index].buffer_len = buffer_len;
   irq_dt_array[irq_dt_array_index].buffer_min_len = buffer_min_len;
-  irq_dt_array[irq_dt_array_index].consume_count = consume_count;
   irq_dt_array[irq_dt_array_index].irq_num = 0;
-  irq_dt_array[irq_dt_array_index].fifo_head = 0;
-  irq_dt_array[irq_dt_array_index].fifo_tail = 0;
   irq_dt_array[irq_dt_array_index].fifo_count = 0;
   irq_dt_array[irq_dt_array_index].can_write = true;
   vtor_num = vtor;
@@ -1488,6 +1480,8 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   DataTracker *dt = (DataTracker *)user_data;
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
+  short tmp_head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+  if(tmp_head_offset == dt->head_offset && )
   if (dt->fifo_count != 0) {
     if (is_head_tail_equal(uc, dt)) {
       nvic_set_pending(uc, dt->irq_num, true);
@@ -1503,10 +1497,10 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
           (global_partion <= fuzz_size) ? get_current_partition(dt) : 0;
       fill_data(dt, local_partion, uc);
     }
-    // if (read_times >= fuzz_size ||
-    //     ((is_head_tail_equal(uc, dt) && global_partion >= fuzz_size))) {
-    //   do_exit(uc, UC_ERR_OK);
-    // }
+    if (read_times >= fuzz_size ||
+        ((is_head_tail_equal(uc, dt) && global_partion >= fuzz_size))) {
+      do_exit(uc, UC_ERR_OK);
+    }
     return UC_ERR_OK;
   }
 
@@ -1640,8 +1634,6 @@ short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr) {
 int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
   size_t remain_data_len = fuzz_size - global_partion;
   if (remain_data_len <= 0 || container_len <= 0) {
-    // If data is already fully used, then fill with 0 to keep the firmware
-    // running
     return 0;
   }
 
@@ -1690,29 +1682,29 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
     }
     dt->fifo_count -= write_len;
     dt->fifo_tail += write_len;
-    if (dt->fifo_count == 0) {
-      dt->fifo_head = 0;
-      dt->fifo_tail = 0;
-    }
     fuzz_cursor += write_len;
     return write_len;
   } else {
     // 剩下的copy到fifo中
     if (len > 4) {
       dt->fifo_count = len - 4;
-      dt->fifo_head = len - 4;
-      dt->fifo_tail = 0;
       memcpy(dt->fifo, data + 4, len - 4);
       offset = 4;
-    } else {
+    } 
       my_debug_log("write_byte_to_data_reg\n");
-
-      uc_mem_write(uc, dt->dr, &data, len);
-      for (int i = 0; i < len / 4; i++) {
+      short head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+      short tmp_head_offset;
+      uc_mem_write(uc, dt->dr, &data, 4);
+      char buffer[100];
+      for (int i = 0; i < len; i++) {
         nvic_set_pending(uc, dt->irq_num, true);
-      }
-
-      offset += len;
+        tmp_head_offset = uc_mem_read_offset_one_byte(uc,dt->rx_head);
+        snprintf(buffer, sizeof(buffer), "xxxhead_offset = %d\n", tmp_head_offset);
+        my_debug_log(buffer);
+        if(head_offset != tmp_head_offset){
+          my_debug_log("head_offset != tmp_head_offset\n");
+          break;
+        }
     }
 
     fuzz_cursor += offset;
@@ -1722,20 +1714,20 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
 }
 
 void my_debug_log(const char *format) {
-  // FILE *debugFile;
+  FILE *debugFile;
 
-  // // 打开文件，如果文件不存在则创建，如果存在则追加写入
-  // debugFile = fopen("/tmp/debug.txt", "a");
+  // 打开文件，如果文件不存在则创建，如果存在则追加写入
+  debugFile = fopen("/tmp/debug.txt", "a");
 
-  // if (debugFile == NULL) {
-  //   fprintf(stderr, "无法打开文件\n");
-  // }
+  if (debugFile == NULL) {
+    fprintf(stderr, "无法打开文件\n");
+  }
 
-  // // 写入调试信息到文件
-  // fprintf(debugFile, "%s", format);
+  // 写入调试信息到文件
+  fprintf(debugFile, "%s", format);
 
-  // // 关闭文件
-  // fclose(debugFile);
+  // 关闭文件
+  fclose(debugFile);
   return;
 }
 
