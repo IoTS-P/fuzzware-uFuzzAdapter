@@ -336,8 +336,8 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     if (do_print_exit_info) {
       puts("\n>>> Ran out of fuzz\n");
     }
-
     // do_exit(uc, UC_ERR_OK);
+    fuzz_cursor = 0;
     return 1;
   }
 }
@@ -383,7 +383,7 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
       fflush(stdout);
     }
-
+    fuzz_cursor = 0;
     // do_exit(uc, UC_ERR_OK);
     return NULL;
   }
@@ -616,8 +616,12 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   uint64_t fuzzer_val = 0;
 
   // TODO: this currently assumes little endianness on both sides to be correct
-  if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-    return;
+  // if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+  //   return;
+  // }
+  for (int i = 0; i < config->byte_size; i++) {
+    fuzzer_val = fuzzer_val << 8;
+    fuzzer_val += rand() % 256;
   }
   result_val = fuzzer_val << config->left_shift;
   uc_mem_write(uc, addr, &result_val, size);
@@ -1478,6 +1482,11 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   DataTracker *dt = (DataTracker *)user_data;
   if (dt->fifo_head != dt->fifo_tail) {
     short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->head_offset);
+    char buf[100];
+    snprintf(buf, sizeof(buf),
+             "cur_head_offset = %d\n,dt->fifo_head:%d\n,dt->fifo_tail:%d\n",
+             cur_head_offset, dt->fifo_head, dt->fifo_tail);
+    my_debug_log(buf);
     // 计算差值作为实际输入的字节数
     short sub_res = cur_head_offset - dt->head_offset;
     // 实到人数加上实际输入的字节数
@@ -1634,21 +1643,21 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
 
     // 先把fifo中的数据写入到dr中，最大长度为4，否则就取fifo中数据的长度
     write_len = (sub_res > 4) ? 4 : sub_res;
-    uc_mem_write(uc, dt->dr, dt->fifo+dt->fifo_tail, write_len);
+    uc_mem_write(uc, dt->dr, dt->fifo + dt->fifo_tail, write_len);
     for (int i = 0; i < write_len; i++) {
-      nvic_set_pending(uc, dt->irq_num, true);
+      nvic_set_pending(uc, dt->irq_num, false);
     }
     return write_len;
   } else {
     memcpy(dt->fifo, data, len);
     if (len > 4) {
       write_len = 4;
-      dt->fifo_head = len;
+      dt->fifo_head = len - 1;
       dt->fifo_tail = 0;
       my_debug_log("write_byte_to_data_reg\n");
       uc_mem_write(uc, dt->dr, data, 4);
-      for (int i = 0; i < write_len; i++) {
-        nvic_set_pending(uc, dt->irq_num, true);
+      for (int i = 0; i < len; i++) {
+        nvic_set_pending(uc, dt->irq_num, false);
       }
     } else {
       write_len = len;
@@ -1656,7 +1665,7 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
       dt->fifo_tail = 0;
       uc_mem_write(uc, dt->dr, data, write_len);
       for (int i = 0; i < write_len; i++) {
-        nvic_set_pending(uc, dt->irq_num, true);
+        nvic_set_pending(uc, dt->irq_num, false);
       }
     }
     dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
