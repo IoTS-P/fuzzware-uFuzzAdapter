@@ -1,4 +1,5 @@
 #include "cortexm_nvic.h"
+#include <stdbool.h>
 
 // We implement recalculating states lazily, but can disable that behavior
 // #define DISABLE_LAZY_RECALCS
@@ -157,9 +158,6 @@ static bool recalc_prios() {
                 #ifdef DEBUG_NVIC
                 printf("[recalc_prios] curr_prio < highest_pending_prio for irq %d: curr: %d < new highest: %d\n", i, curr_prio, highest_pending_prio);
                 #endif
-                char buf[100];
-                snprintf(buf, sizeof(buf), "recalc_prios: curr_prio < highest_pending_prio for irq %d: curr: %d < new highest: %d\n", i, curr_prio, highest_pending_prio);
-                my_debug_log(buf);
                 // We are tracking the full pending prio here to be able to
                 // check whether we actually need updates elsewhere
                 highest_pending_prio = curr_prio;
@@ -205,9 +203,6 @@ void pend_interrupt(uc_engine *uc, int exception_no) {
     printf("[pend_interrupt] exception_no=%d\n", exception_no);
     fflush(stdout);
     #endif
-    char buf[100];
-    snprintf(buf, sizeof(buf), "pend_interrupt: exception_no=%d", exception_no);
-    my_debug_log(buf);
 
     if(nvic.ExceptionPending[exception_no] == 0) {
         nvic.ExceptionPending[exception_no] = 1;

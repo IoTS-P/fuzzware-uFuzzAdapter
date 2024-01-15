@@ -16,5 +16,5 @@
 
 void print_state(uc_engine *uc);
 int get_instruction_size(uint64_t insn, bool is_thumb);
-
+int divideAndRoundUp(int numerator, int denominator);
 #endif

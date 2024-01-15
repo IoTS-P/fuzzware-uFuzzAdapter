@@ -17,6 +17,7 @@ target (uc_mem_write)
 #include "util.h"
 
 #include <stdbool.h>
+#include <sys/types.h>
 #include <unicorn/unicorn.h>
 
 #include <errno.h>
@@ -616,12 +617,8 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   uint64_t fuzzer_val = 0;
 
   // TODO: this currently assumes little endianness on both sides to be correct
-  // if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-  //   return;
-  // }
-  for (int i = 0; i < config->byte_size; i++) {
-    fuzzer_val = fuzzer_val << 8;
-    fuzzer_val += rand() % 256;
+  if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+    return;
   }
   result_val = fuzzer_val << config->left_shift;
   uc_mem_write(uc, addr, &result_val, size);
@@ -1481,14 +1478,9 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   my_debug_log("irq_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
   if (dt->fifo_head != dt->fifo_tail) {
-    short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->head_offset);
-    char buf[100];
-    snprintf(buf, sizeof(buf),
-             "cur_head_offset = %d\n,dt->fifo_head:%d\n,dt->fifo_tail:%d\n",
-             cur_head_offset, dt->fifo_head, dt->fifo_tail);
-    my_debug_log(buf);
+    short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
     // 计算差值作为实际输入的字节数
-    short sub_res = cur_head_offset - dt->head_offset;
+    short sub_res = (cur_head_offset - dt->head_offset + dt->buffer_len) % dt->buffer_len;
     // 实到人数加上实际输入的字节数
     dt->fifo_tail += sub_res;
     dt->head_offset = cur_head_offset;
@@ -1643,29 +1635,29 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
 
     // 先把fifo中的数据写入到dr中，最大长度为4，否则就取fifo中数据的长度
     write_len = (sub_res > 4) ? 4 : sub_res;
-    uc_mem_write(uc, dt->dr, dt->fifo + dt->fifo_tail, write_len);
-    for (int i = 0; i < write_len; i++) {
-      nvic_set_pending(uc, dt->irq_num, false);
+    uc_mem_write(uc, dt->dr, dt->fifo+dt->fifo_tail, write_len);
+    for (int i = 0; i < 4; i++) {
+      nvic_set_pending(uc, dt->irq_num, true);
     }
     return write_len;
   } else {
     memcpy(dt->fifo, data, len);
     if (len > 4) {
       write_len = 4;
-      dt->fifo_head = len - 1;
+      dt->fifo_head = len-1;
       dt->fifo_tail = 0;
-      my_debug_log("write_byte_to_data_reg\n");
       uc_mem_write(uc, dt->dr, data, 4);
-      for (int i = 0; i < len; i++) {
-        nvic_set_pending(uc, dt->irq_num, false);
+      
+      for (int i = 0; i < 4; i++) {
+        nvic_set_pending(uc, dt->irq_num, true);
       }
     } else {
       write_len = len;
-      dt->fifo_head = len;
+      dt->fifo_head = len-1;
       dt->fifo_tail = 0;
       uc_mem_write(uc, dt->dr, data, write_len);
-      for (int i = 0; i < write_len; i++) {
-        nvic_set_pending(uc, dt->irq_num, false);
+      for (int i = 0; i < 4; i++) {
+        nvic_set_pending(uc, dt->irq_num, true);
       }
     }
     dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
@@ -1674,20 +1666,20 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
 }
 
 void my_debug_log(const char *format) {
-  FILE *debugFile;
+  // FILE *debugFile;
 
-  // 打开文件，如果文件不存在则创建，如果存在则追加写入
-  debugFile = fopen("/tmp/debug.txt", "a");
+  // // 打开文件，如果文件不存在则创建，如果存在则追加写入
+  // debugFile = fopen("/tmp/debug.txt", "a");
 
-  if (debugFile == NULL) {
-    fprintf(stderr, "无法打开文件\n");
-  }
+  // if (debugFile == NULL) {
+  //   fprintf(stderr, "无法打开文件\n");
+  // }
 
-  // 写入调试信息到文件
-  fprintf(debugFile, "%s", format);
+  // // 写入调试信息到文件
+  // fprintf(debugFile, "%s", format);
 
-  // 关闭文件
-  fclose(debugFile);
+  // // 关闭文件
+  // fclose(debugFile);
   return;
 }
 

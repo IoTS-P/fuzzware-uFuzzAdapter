@@ -1,6 +1,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <string.h>
+#include <math.h>
 #include <unicorn/unicorn.h>
 
 int get_instruction_size(uint64_t insn, bool is_thumb) {
@@ -72,4 +73,9 @@ void print_state(uc_engine *uc) {
     }
     puts("======================\n");
     fflush(stdout);
+}
+
+int divideAndRoundUp(int numerator, int denominator) {
+    double result = ceil((double)numerator / denominator);
+    return (int)result;
 }
