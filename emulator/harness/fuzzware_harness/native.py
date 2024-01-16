@@ -212,6 +212,7 @@ def set_ignored_mmio_addresses(addresses, pcs):
         addrs_arr, pcs_arr, len(addrs_arr)
     ) == 0
 
+
 def init_nvic(uc, vtor, num_vecs, interrupt_limit=DEFAULT_MAX_INTERRUPTS, disabled_interrupts=()):
     global native_lib
     logger.debug("Calling init_nvic with vtor=0x{:08x}, num_vecs: {}".format(vtor, num_vecs))

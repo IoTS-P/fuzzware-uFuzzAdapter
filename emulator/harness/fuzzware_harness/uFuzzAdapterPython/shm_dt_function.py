@@ -58,6 +58,15 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
         else:
             my_debug_log("fill_data_tracker_array success")
             
-
-def basicblock_hook(uc, address, size, user_data):
-    my_debug_log("address:0x{:x},size:0x{:x}".format(address,size))
+from capstone import Cs, CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB
+cs = Cs(CS_ARCH_ARM, CS_MODE_MCLASS|CS_MODE_THUMB)
+from unicorn.arm_const import UC_ARM_REG_PC
+def _hook_instruction(uc, address, size, user_data):
+    '''
+    dump instruction disassembly and log. 
+    Used if globs.debug_level > 2.
+    '''
+    curpc = uc.reg_read(UC_ARM_REG_PC)
+    mem = uc.mem_read(address, size)
+    for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):
+        my_debug_log("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))

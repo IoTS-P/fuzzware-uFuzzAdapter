@@ -158,6 +158,7 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
+  reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
   }
@@ -340,7 +341,14 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     }
     // do_exit(uc, UC_ERR_OK);
     fuzz_cursor = 0;
-    return 1;
+    memcpy(buf, &fuzz[fuzz_cursor], size);
+    fuzz_cursor += size;
+
+    // We are consuming fuzzing input, reset watchdog
+    reload_timer(fuzz_consumption_timer_id);
+
+    return 0;
+    // return 1;
   }
 }
 
@@ -387,7 +395,14 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
     }
     fuzz_cursor = 0;
     // do_exit(uc, UC_ERR_OK);
-    return NULL;
+        uint8_t *res = &fuzz[fuzz_cursor];
+    fuzz_cursor += size;
+
+    // We are consuming fuzzing input, reset watchdog
+    reload_timer(fuzz_consumption_timer_id);
+
+    return res;
+    // return NULL;
   }
 }
 
@@ -1428,6 +1443,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].fifo_head = 0;
   irq_dt_array[irq_dt_array_index].fifo_tail = 0;
   irq_dt_array[irq_dt_array_index].tail_offset = 0;
+  irq_dt_array[irq_dt_array_index].head_offset = 0;
   vtor_num = vtor;
   irq_dt_array_index++;
   return 0;
@@ -1460,7 +1476,6 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
         perror("Could not add avail hook\n");
         return -1;
       } else {
-        printf("avail hook added\n");
         my_debug_log("avail hook added\n");
       }
     }
@@ -1478,7 +1493,7 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
 
-  // my_debug_log("irq_avail_hook_handler\n");
+  my_debug_log("irq_avail_hook_handler\n");
 
   DataTracker *dt = (DataTracker *)user_data;
   char buffer[100];
@@ -1492,25 +1507,18 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     dt->head_offset = cur_head_offset;
     global_partion += sub_res;
     snprintf(buffer, sizeof(buffer),
-             "fifo_head != fifo_tail,sub_res:%d,global_partion:%d\n", sub_res,
+             "sub_res:%d,global_partion:%d\n", sub_res,
              global_partion);
     my_debug_log(buffer);
   }
 
   snprintf(buffer, sizeof(buffer), "global_partion = %d\n,fuzz_size:%ld\n",
            global_partion, fuzz_size);
-  // my_debug_log(buffer);
+  my_debug_log(buffer);
   if (read_times >= fuzz_size) {
     my_debug_log("fuzz consumed now\n");
     short tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
     snprintf(buffer, sizeof(buffer), "tail_offset = %d\n", tail_offset);
-    // need reset all dt
-    global_partion = 0;
-
-    dt->head_offset = 0;
-    dt->fifo_head = 0;
-    dt->fifo_tail = 0;
-    read_times = 0;
     do_exit(uc, UC_ERR_OK);
     return UC_ERR_OK;
   }
@@ -1653,6 +1661,7 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
 
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
+  is_head_tail_equal(uc, dt);
   int write_len = 0;
   short sub_res = dt->fifo_head - dt->fifo_tail;
   if (sub_res > 0) {
@@ -1678,6 +1687,7 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
     uc_mem_write(uc, dt->dr, data, write_len);
     nvic_set_pending(uc, dt->irq_num, true);
     dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+
     return write_len;
   }
 }
@@ -1686,12 +1696,12 @@ uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc,
                                         uint32_t size, void *user_data) {
   DataTracker *dt = (DataTracker *)user_data;
   short cur_tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+  is_head_tail_equal(uc, dt);
   if (cur_tail_offset != dt->tail_offset) {
 
     read_times++;
     my_debug_log("read_times_increase_hook_handler\n");
-  }
-  else{
+  } else {
     is_head_tail_equal(uc, dt);
   }
   return UC_ERR_OK;
@@ -1732,4 +1742,17 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
     }
   }
   return 0;
+}
+
+void reset_datatrcker_and_global_vars(){
+  global_partion = 0;
+  read_times = 0;
+  random_split_size = 0;
+  read_times = 0;
+  for(int i=0;i<irq_dt_array_index;i++){
+    irq_dt_array[i].fifo_head = 0;
+    irq_dt_array[i].fifo_tail = 0;
+    irq_dt_array[i].tail_offset = 0;
+    irq_dt_array[i].head_offset = 0;
+  }
 }

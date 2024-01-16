@@ -4,7 +4,7 @@ import os
 import sys
 import logging
 
-from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK)
+from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK,UC_HOOK_CODE)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
 
 from . import interrupt_triggers, native, timer, user_hooks,globs
@@ -264,10 +264,10 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,basicblock_hook
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,_hook_instruction
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
-    # uc.hook_add(UC_HOOK_BLOCK, basicblock_hook)
+    uc.hook_add(UC_HOOK_CODE, _hook_instruction, None, 0x800424c, 0x8004272)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
     # MMIO modeling and listener setup
@@ -378,8 +378,8 @@ def main():
         logger.error("input file is no regular file")
         sys.exit(1)
 
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
+    # if args.debug:
+    logger.setLevel(logging.DEBUG)
 
     debug_flags = [args.trace_memory, args.trace_funcs, args.breakpoints, args.gdb_port != 0]
     if any(debug_flags):

@@ -156,4 +156,5 @@ int fill_data(DataTracker *dt, size_t container_len,uc_engine *uc) ;
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,uc_engine *uc);
 void my_debug_log(const char *format);
 int get_match_irq_num(uc_engine *uc,uint32_t irq_pc);
+void reset_datatrcker_and_global_vars();
 #endif

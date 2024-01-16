@@ -18,7 +18,7 @@ typedef struct DataTracker {
     short buffer_min_len; // 缓冲区最小长度
     short irq_num;
     // fifo设置，头尾指针指向fuzz的数据
-    uint8_t fifo[512];
+    uint8_t fifo[65536];
     short fifo_head;
     short fifo_tail;
 } DataTracker;
