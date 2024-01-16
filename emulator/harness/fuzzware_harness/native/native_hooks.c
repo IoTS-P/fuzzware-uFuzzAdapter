@@ -131,6 +131,7 @@ uint32_t vtor_num = 0;
 
 short blocklist_interrupt[64];
 short blocklist_interrupt_index = 0;
+short read_tiems = 0;
 
 static void determine_input_mode() {
   char *id_str;
@@ -1426,6 +1427,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].irq_num = 0;
   irq_dt_array[irq_dt_array_index].fifo_head = 0;
   irq_dt_array[irq_dt_array_index].fifo_tail = 0;
+  irq_dt_array[irq_dt_array_index].tail_offset = 0;
   vtor_num = vtor;
   irq_dt_array_index++;
   return 0;
@@ -1446,14 +1448,14 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
   for (int i = 0; i < irq_dt_array_index; i++) {
     if (irq_dt_array[i].avail_pc != 0) {
       uc_hook irq_hook;
-      // uc_hook read_hook;
+      uc_hook read_hook;
       printf("avail_pc = %x\n", irq_dt_array[i].avail_pc);
       int res = uc_hook_add(uc, &irq_hook, UC_HOOK_CODE, irq_avail_hook_handler,
                             &irq_dt_array[i], irq_dt_array[i].avail_pc,
                             irq_dt_array[i].avail_pc);
-      // uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
-      //             read_times_increase_hook_handler, &irq_dt_array[i],
-      //             irq_dt_array[i].read_pc, irq_dt_array[i].read_pc);
+      uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
+                  read_times_increase_hook_handler, &irq_dt_array[i],
+                  irq_dt_array[i].read_pc, irq_dt_array[i].read_pc);
       if (res != UC_ERR_OK) {
         perror("Could not add avail hook\n");
         return -1;
@@ -1475,19 +1477,42 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
-  my_debug_log("irq_avail_hook_handler\n");
+
+  // my_debug_log("irq_avail_hook_handler\n");
+
   DataTracker *dt = (DataTracker *)user_data;
+  char buffer[100];
   if (dt->fifo_head != dt->fifo_tail) {
     short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
     // 计算差值作为实际输入的字节数
-    short sub_res = (cur_head_offset - dt->head_offset + dt->buffer_len) % dt->buffer_len;
+    short sub_res =
+        (cur_head_offset - dt->head_offset + dt->buffer_len) % dt->buffer_len;
     // 实到人数加上实际输入的字节数
     dt->fifo_tail += sub_res;
     dt->head_offset = cur_head_offset;
     global_partion += sub_res;
+    snprintf(buffer, sizeof(buffer),
+             "fifo_head != fifo_tail,sub_res:%d,global_partion:%d\n", sub_res,
+             global_partion);
+    my_debug_log(buffer);
   }
-  if (global_partion >= fuzz_size) {
+
+  snprintf(buffer, sizeof(buffer), "global_partion = %d\n,fuzz_size:%ld\n",
+           global_partion, fuzz_size);
+  // my_debug_log(buffer);
+  if (read_times >= fuzz_size) {
+    my_debug_log("fuzz consumed now\n");
+    short tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+    snprintf(buffer, sizeof(buffer), "tail_offset = %d\n", tail_offset);
+    // need reset all dt
+    global_partion = 0;
+
+    dt->head_offset = 0;
+    dt->fifo_head = 0;
+    dt->fifo_tail = 0;
+    read_times = 0;
     do_exit(uc, UC_ERR_OK);
+    return UC_ERR_OK;
   }
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
@@ -1595,7 +1620,7 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
     return 0;
   }
 
-  my_debug_log("---------------fill_data-------------\n");
+  // my_debug_log("---------------fill_data-------------\n");
 
   int need_input_len =
       (remain_data_len < container_len) ? remain_data_len : container_len;
@@ -1607,7 +1632,7 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
 
   if (need_input_len < buffer_min_len) {
     // TODO: Handle the case where there is not enough data (padding)
-    my_debug_log("need_input_len < buffer_min_len\n");
+    // my_debug_log("need_input_len < buffer_min_len\n");
     padding_len = buffer_min_len - need_input_len;
   }
   uint8_t random_input[buffer_min_len]; // Ensure this is large enough for the
@@ -1615,7 +1640,7 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
   if (padding_len > 0) {
     // Fill with padding data
     memcpy(random_input, fuzz, padding_len);
-    my_debug_log("add the padding data to the input\n");
+    // my_debug_log("add the padding data to the input\n");
   }
   // Write the data to the data register
   int write_len =
@@ -1630,56 +1655,63 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
   int write_len = 0;
   short sub_res = dt->fifo_head - dt->fifo_tail;
-  if (sub_res != 0) {
-    my_debug_log("fifo data not empty\n");
+  if (sub_res > 0) {
+    // my_debug_log("fifo data not empty\n");
 
     // 先把fifo中的数据写入到dr中，最大长度为4，否则就取fifo中数据的长度
     write_len = (sub_res > 4) ? 4 : sub_res;
-    uc_mem_write(uc, dt->dr, dt->fifo+dt->fifo_tail, write_len);
-    for (int i = 0; i < 4; i++) {
-      nvic_set_pending(uc, dt->irq_num, true);
-    }
+    uc_mem_write(uc, dt->dr, dt->fifo + dt->fifo_tail, write_len);
+    nvic_set_pending(uc, dt->irq_num, true);
+    return write_len;
+  } else if (sub_res < 0) {
+    do_exit(uc, UC_ERR_OK);
     return write_len;
   } else {
     memcpy(dt->fifo, data, len);
+    dt->fifo_head = len - 1;
+    dt->fifo_tail = 0;
     if (len > 4) {
       write_len = 4;
-      dt->fifo_head = len-1;
-      dt->fifo_tail = 0;
-      uc_mem_write(uc, dt->dr, data, 4);
-      
-      for (int i = 0; i < 4; i++) {
-        nvic_set_pending(uc, dt->irq_num, true);
-      }
     } else {
       write_len = len;
-      dt->fifo_head = len-1;
-      dt->fifo_tail = 0;
-      uc_mem_write(uc, dt->dr, data, write_len);
-      for (int i = 0; i < 4; i++) {
-        nvic_set_pending(uc, dt->irq_num, true);
-      }
     }
+    uc_mem_write(uc, dt->dr, data, write_len);
+    nvic_set_pending(uc, dt->irq_num, true);
     dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
     return write_len;
   }
 }
 
+uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc,
+                                        uint32_t size, void *user_data) {
+  DataTracker *dt = (DataTracker *)user_data;
+  short cur_tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+  if (cur_tail_offset != dt->tail_offset) {
+
+    read_times++;
+    my_debug_log("read_times_increase_hook_handler\n");
+  }
+  else{
+    is_head_tail_equal(uc, dt);
+  }
+  return UC_ERR_OK;
+}
+
 void my_debug_log(const char *format) {
-  // FILE *debugFile;
+  FILE *debugFile;
 
-  // // 打开文件，如果文件不存在则创建，如果存在则追加写入
-  // debugFile = fopen("/tmp/debug.txt", "a");
+  // 打开文件，如果文件不存在则创建，如果存在则追加写入
+  debugFile = fopen("/tmp/debug.txt", "a");
 
-  // if (debugFile == NULL) {
-  //   fprintf(stderr, "无法打开文件\n");
-  // }
+  if (debugFile == NULL) {
+    fprintf(stderr, "无法打开文件\n");
+  }
 
-  // // 写入调试信息到文件
-  // fprintf(debugFile, "%s", format);
+  // 写入调试信息到文件
+  fprintf(debugFile, "%s", format);
 
-  // // 关闭文件
-  // fclose(debugFile);
+  // 关闭文件
+  fclose(debugFile);
   return;
 }
 
@@ -1688,17 +1720,12 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   int num_enabled = get_num_enabled();
   int irq_num = 0;
   uint64_t irq_handler_memory_addr;
-  char buffer[100];
   for (int i = 1; i <= num_enabled; i++) {
     irq_num = nth_enabled_irq_num(i);
     irq_handler_memory_addr = vtor_num + irq_num * 4;
     int irq_handler_memory_value;
     uc_mem_read(uc, irq_handler_memory_addr, &irq_handler_memory_value,
                 sizeof(irq_handler_memory_value));
-    snprintf(buffer, sizeof(buffer),
-             "irq_pc = %x,irq_handler_memory_value=%x\n", irq_pc,
-             irq_handler_memory_value);
-    my_debug_log(buffer);
     if (abs((int)(irq_handler_memory_value - irq_pc)) <= 4) {
       blocklist_interrupt[blocklist_interrupt_index++] = irq_num;
       return irq_num;

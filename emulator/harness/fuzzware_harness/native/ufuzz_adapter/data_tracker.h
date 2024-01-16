@@ -13,6 +13,7 @@ typedef struct DataTracker {
     uint32_t rx_head; // 指向rx缓冲区的头部指针
     uint32_t rx_tail; // 指向rx缓冲区的尾部指针
     short head_offset;
+    short tail_offset;
     short buffer_len; // 缓冲区长度
     short buffer_min_len; // 缓冲区最小长度
     short irq_num;
