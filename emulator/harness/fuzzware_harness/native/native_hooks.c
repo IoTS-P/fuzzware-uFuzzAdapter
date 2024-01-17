@@ -10,12 +10,12 @@ target (uc_mem_write)
 #include "native_hooks.h"
 #include "core_peripherals/cortexm_nvic.h"
 #include "interrupt_triggers.h"
+#include "khash.h"
 #include "state_snapshotting.h"
 #include "timer.h"
 #include "uc_snapshot.h"
 #include "ufuzz_adapter/data_tracker.h"
 #include "util.h"
-
 #include <stdbool.h>
 #include <sys/types.h>
 #include <unicorn/unicorn.h>
@@ -131,6 +131,9 @@ uint32_t vtor_num = 0;
 
 short blocklist_interrupt[64];
 short blocklist_interrupt_index = 0;
+// 定义哈希表的数据类型
+KHASH_MAP_INIT_INT(dr_dt, DataTracker)
+khash_t(dr_dt) *hash_table = NULL;
 
 static void determine_input_mode() {
   char *id_str;
@@ -615,23 +618,35 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
       (struct bitextract_mmio_model_config *)user_data;
   uint64_t result_val = 0;
   uint64_t fuzzer_val = 0;
+  // 查找元素
+  khint_t k = kh_get(dr_dt, hash_table, addr);
+  if (k != kh_end(hash_table)) {
+    // 找到了元素
+    my_debug_log("found elemnet\n");
+    // my _get_fuzz
+  } else {
+    // 没有找到元素
 
-  // TODO: this currently assumes little endianness on both sides to be correct
-  if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-    return;
-  }
+    // TODO: this currently assumes little endianness on both sides to be
+    // correct
+    my_debug_log("not findd elemnet\n");
+    if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+      return;
+    }
 
-  result_val = fuzzer_val << config->left_shift;
-  uc_mem_write(uc, addr, &result_val, size);
+    result_val = fuzzer_val << config->left_shift;
+    uc_mem_write(uc, addr, &result_val, size);
 
 #ifdef DEBUG
-  uint32_t pc;
-  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-  printf("[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] from %d "
-         "byte input: %lx\n",
-         pc, addr, result_val, config->byte_size, fuzzer_val);
-  fflush(stdout);
+    uint32_t pc;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    printf(
+        "[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] from %d "
+        "byte input: %lx\n",
+        pc, addr, result_val, config->byte_size, fuzzer_val);
+    fflush(stdout);
 #endif
+  }
 }
 
 void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
@@ -749,23 +764,7 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
       }
       mask >>= 1;
     }
-    int data_tracker_equal_mmio = 0;
-    // for (int j = 0; j < main_dt_array_index; j++) {
 
-    //   if (main_dt_array[j].dr == pcs[i]) {
-    //     data_tracker_equal_mmio = 1;
-    //     break;
-    //   }
-    // }
-    if (!data_tracker_equal_mmio) {
-      for (int j = 0; j < irq_dt_array_index; j++) {
-        if (irq_dt_array[j].dr == starts[i]) {
-          data_tracker_equal_mmio = 1;
-          my_debug_log("dr已经被接管\n");
-          break;
-        }
-      }
-    }
     // #ifdef DEBUG
     printf("Registering bitextract model for range: [%x] %lx - %lx with size, "
            "left_shift: %d, %d. Mask: %08x, hw: %d\n",
@@ -773,12 +772,11 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
            model_configs[i].mask_hamming_weight);
     fflush(stdout);
     // #endif
-    if (!data_tracker_equal_mmio) {
-      if (add_mmio_subregion_handler(uc, bitextract_mmio_model_handler,
-                                     starts[i], ends[i], pcs[i],
-                                     &model_configs[i]) != UC_ERR_OK) {
-        return UC_ERR_EXCEPTION;
-      }
+
+    if (add_mmio_subregion_handler(uc, bitextract_mmio_model_handler, starts[i],
+                                   ends[i], pcs[i],
+                                   &model_configs[i]) != UC_ERR_OK) {
+      return UC_ERR_EXCEPTION;
     }
   }
 
@@ -1429,6 +1427,15 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].tail_offset = 0;
   irq_dt_array[irq_dt_array_index].head_offset = 0;
   vtor_num = vtor;
+  if(hash_table == NULL){
+    init_dr_dt_hash();
+  }
+// 插入元素
+  int ret = 0;
+  khint_t  k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
+      kh_value(hash_table, k) = irq_dt_array[irq_dt_array_index]; // 设置键对应的值
+  }
   irq_dt_array_index++;
   return 0;
 }
@@ -1476,24 +1483,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   my_debug_log("irq_avail_hook_handler\n");
 
   DataTracker *dt = (DataTracker *)user_data;
-  char buffer[100];
-  if (dt->fifo_head != dt->fifo_tail) {
-    short cur_head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
-    // 计算差值作为实际输入的字节数
-    short sub_res =
-        (cur_head_offset - dt->head_offset + dt->buffer_len) % dt->buffer_len;
-    // 实到人数加上实际输入的字节数
-    dt->fifo_tail += sub_res;
-    dt->head_offset = cur_head_offset;
-    global_partion += sub_res;
-    snprintf(buffer, sizeof(buffer), "sub_res:%d,global_partion:%d\n", sub_res,
-             global_partion);
-    my_debug_log(buffer);
-  }
 
-  snprintf(buffer, sizeof(buffer), "global_partion = %d\n,fuzz_size:%ld\n",
-           global_partion, fuzz_size);
-  my_debug_log(buffer);
   if (global_partion >= fuzz_size) {
     my_debug_log("fuzz consumed now\n");
     do_exit(uc, UC_ERR_OK);
@@ -1717,4 +1707,15 @@ void reset_datatrcker_and_global_vars() {
     irq_dt_array[i].tail_offset = 0;
     irq_dt_array[i].head_offset = 0;
   }
+}
+
+int init_dr_dt_hash() {
+
+  // 创建哈希表
+  khash_t(dr_dt) *h = kh_init(dr_dt);
+  hash_table = h;
+  return 0;
+
+  // 销毁哈希表
+  // kh_destroy(dr_dt, h);
 }
