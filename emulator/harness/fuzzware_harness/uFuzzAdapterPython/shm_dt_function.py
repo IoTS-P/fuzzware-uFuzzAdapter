@@ -66,7 +66,6 @@ def _hook_instruction(uc, address, size, user_data):
     dump instruction disassembly and log. 
     Used if globs.debug_level > 2.
     '''
-    my_debug_log(f"Instruction hook at {address:#016x}, instruction size = {size}")
     curpc = uc.reg_read(UC_ARM_REG_PC)
     mem = uc.mem_read(address, size)
     for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):

@@ -131,7 +131,6 @@ uint32_t vtor_num = 0;
 
 short blocklist_interrupt[64];
 short blocklist_interrupt_index = 0;
-short read_tiems = 0;
 
 static void determine_input_mode() {
   char *id_str;
@@ -158,7 +157,6 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
-  reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
   }
@@ -339,16 +337,9 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     if (do_print_exit_info) {
       puts("\n>>> Ran out of fuzz\n");
     }
-    // do_exit(uc, UC_ERR_OK);
-    fuzz_cursor = 0;
-    memcpy(buf, &fuzz[fuzz_cursor], size);
-    fuzz_cursor += size;
 
-    // We are consuming fuzzing input, reset watchdog
-    reload_timer(fuzz_consumption_timer_id);
-
-    return 0;
-    // return 1;
+    do_exit(uc, UC_ERR_OK);
+    return 1;
   }
 }
 
@@ -393,16 +384,9 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
       fflush(stdout);
     }
-    fuzz_cursor = 0;
-    // do_exit(uc, UC_ERR_OK);
-        uint8_t *res = &fuzz[fuzz_cursor];
-    fuzz_cursor += size;
 
-    // We are consuming fuzzing input, reset watchdog
-    reload_timer(fuzz_consumption_timer_id);
-
-    return res;
-    // return NULL;
+    do_exit(uc, UC_ERR_OK);
+    return NULL;
   }
 }
 
@@ -636,6 +620,7 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
     return;
   }
+
   result_val = fuzzer_val << config->left_shift;
   uc_mem_write(uc, addr, &result_val, size);
 
@@ -750,8 +735,7 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
                                        int num_ranges) {
   struct bitextract_mmio_model_config *model_configs =
       calloc(num_ranges, sizeof(struct bitextract_mmio_model_config));
-  printf("Registering incoming Bitextract models\n");
-  printf("irq_dt_array_index=%d\n", irq_dt_array_index);
+
   for (int i = 0; i < num_ranges; ++i) {
     model_configs[i].mask = masks[i];
     model_configs[i].byte_size = byte_sizes[i];
@@ -766,18 +750,18 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
       mask >>= 1;
     }
     int data_tracker_equal_mmio = 0;
-    for (int j = 0; j < main_dt_array_index; j++) {
+    // for (int j = 0; j < main_dt_array_index; j++) {
 
-      if (main_dt_array[j].dr == pcs[i]) {
-        data_tracker_equal_mmio = 1;
-        break;
-      }
-    }
+    //   if (main_dt_array[j].dr == pcs[i]) {
+    //     data_tracker_equal_mmio = 1;
+    //     break;
+    //   }
+    // }
     if (!data_tracker_equal_mmio) {
       for (int j = 0; j < irq_dt_array_index; j++) {
         if (irq_dt_array[j].dr == starts[i]) {
           data_tracker_equal_mmio = 1;
-          printf("dr已经被接管\n");
+          my_debug_log("dr已经被接管\n");
           break;
         }
       }
@@ -1464,14 +1448,10 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
   for (int i = 0; i < irq_dt_array_index; i++) {
     if (irq_dt_array[i].avail_pc != 0) {
       uc_hook irq_hook;
-      uc_hook read_hook;
       printf("avail_pc = %x\n", irq_dt_array[i].avail_pc);
       int res = uc_hook_add(uc, &irq_hook, UC_HOOK_CODE, irq_avail_hook_handler,
                             &irq_dt_array[i], irq_dt_array[i].avail_pc,
                             irq_dt_array[i].avail_pc);
-      uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
-                  read_times_increase_hook_handler, &irq_dt_array[i],
-                  irq_dt_array[i].read_pc, irq_dt_array[i].read_pc);
       if (res != UC_ERR_OK) {
         perror("Could not add avail hook\n");
         return -1;
@@ -1506,8 +1486,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     dt->fifo_tail += sub_res;
     dt->head_offset = cur_head_offset;
     global_partion += sub_res;
-    snprintf(buffer, sizeof(buffer),
-             "sub_res:%d,global_partion:%d\n", sub_res,
+    snprintf(buffer, sizeof(buffer), "sub_res:%d,global_partion:%d\n", sub_res,
              global_partion);
     my_debug_log(buffer);
   }
@@ -1515,10 +1494,8 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   snprintf(buffer, sizeof(buffer), "global_partion = %d\n,fuzz_size:%ld\n",
            global_partion, fuzz_size);
   my_debug_log(buffer);
-  if (read_times >= fuzz_size) {
+  if (global_partion >= fuzz_size) {
     my_debug_log("fuzz consumed now\n");
-    short tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
-    snprintf(buffer, sizeof(buffer), "tail_offset = %d\n", tail_offset);
     do_exit(uc, UC_ERR_OK);
     return UC_ERR_OK;
   }
@@ -1692,21 +1669,6 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
   }
 }
 
-uc_err read_times_increase_hook_handler(uc_engine *uc, uint64_t pc,
-                                        uint32_t size, void *user_data) {
-  DataTracker *dt = (DataTracker *)user_data;
-  short cur_tail_offset = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
-  is_head_tail_equal(uc, dt);
-  if (cur_tail_offset != dt->tail_offset) {
-
-    read_times++;
-    my_debug_log("read_times_increase_hook_handler\n");
-  } else {
-    is_head_tail_equal(uc, dt);
-  }
-  return UC_ERR_OK;
-}
-
 void my_debug_log(const char *format) {
   FILE *debugFile;
 
@@ -1744,12 +1706,12 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   return 0;
 }
 
-void reset_datatrcker_and_global_vars(){
+void reset_datatrcker_and_global_vars() {
   global_partion = 0;
   read_times = 0;
   random_split_size = 0;
   read_times = 0;
-  for(int i=0;i<irq_dt_array_index;i++){
+  for (int i = 0; i < irq_dt_array_index; i++) {
     irq_dt_array[i].fifo_head = 0;
     irq_dt_array[i].fifo_tail = 0;
     irq_dt_array[i].tail_offset = 0;
