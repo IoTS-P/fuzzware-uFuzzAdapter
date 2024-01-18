@@ -18,7 +18,7 @@ from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 
 # logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
-logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG)
+logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG,filemode="w")
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -267,7 +267,7 @@ def configure_unicorn(args):
     from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,_hook_instruction
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
-    uc.hook_add(UC_HOOK_CODE, _hook_instruction, None, 0x800424c, 0x8004272)
+    # uc.hook_add(UC_HOOK_CODE, _hook_instruction, None)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
     # MMIO modeling and listener setup

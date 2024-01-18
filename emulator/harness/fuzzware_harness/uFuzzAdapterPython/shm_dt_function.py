@@ -72,9 +72,26 @@ def _hook_instruction(uc, address, size, user_data):
         my_debug_log
         ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
         my_debug_log(f"    PC: {curpc:#016x}")
-        head_offset = uc.mem_read(536872044,2)
-        head_offset = int.from_bytes(head_offset,byteorder='little')
-        my_debug_log(f"head_offset: {head_offset:#x}")
-        tail_offset = uc.mem_read(536872046,2)
-        tail_offset = int.from_bytes(tail_offset,byteorder='little')
-        my_debug_log(f"tail_offset: {tail_offset:#x}")
+        # head_offset = uc.mem_read(536872044,2)
+        # head_offset = int.from_bytes(head_offset,byteorder='little')
+        # my_debug_log(f"head_offset: {head_offset:#x}")
+        # tail_offset = uc.mem_read(536872046,2)
+        # tail_offset = int.from_bytes(tail_offset,byteorder='little')
+        # my_debug_log(f"tail_offset: {tail_offset:#x}")
+    # if address == 0x80042ba:
+    #     from unicorn.arm_const import UC_ARM_REG_R0
+    #     r1 = uc.reg_read(UC_ARM_REG_R0+1)
+    #     r2 = uc.reg_read(UC_ARM_REG_R0+2)
+    #     charc = uc.mem_read(r1+r2,4)
+    #     my_debug_log(f"r1: {r1:#x}")
+    #     my_debug_log(f"r2: {r2:#x}")
+    #     my_debug_log(f"charc: {charc}")
+    #     dr = 0x4000
+
+def _hook_irq_function(uc, address, size, user_data):
+    '''
+    hook irq function. 
+    '''
+    my_debug_log(f"irq function: {address:#x}")
+    my_debug_log(f"irq function: {size:#x}")
+    my_debug_log

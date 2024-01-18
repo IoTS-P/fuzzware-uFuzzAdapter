@@ -1013,7 +1013,7 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
             if(do_print_exit_info) {
                 printf("Interrupt activation limit of %d reached, exiting\n", interrupt_limit); fflush(stdout);
             }
-
+            my_debug_log("interrupt limit reached??????\n");
             do_exit(uc, UC_ERR_OK);
             return;
         }
@@ -1074,7 +1074,6 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
     uint32_t isr_entry;
     uc_mem_read(uc, nvic.vtor + 4 * ExceptionNumber, &isr_entry, sizeof(isr_entry));
     uc_reg_write(uc, UC_ARM_REG_PC, &isr_entry);
-
     #ifdef DEBUG_NVIC
     printf("Redirecting irq %d to isr: %08x\n", ExceptionNumber, isr_entry);
     #endif

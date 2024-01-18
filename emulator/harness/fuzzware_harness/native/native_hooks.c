@@ -132,7 +132,7 @@ uint32_t vtor_num = 0;
 short blocklist_interrupt[64];
 short blocklist_interrupt_index = 0;
 // 定义哈希表的数据类型
-KHASH_MAP_INIT_INT(dr_dt, DataTracker)
+KHASH_MAP_INIT_INT(dr_dt, DataTracker *)
 khash_t(dr_dt) *hash_table = NULL;
 
 static void determine_input_mode() {
@@ -160,10 +160,13 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
+  reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
   }
-
+  char buf[100];
+  snprintf(buf, sizeof(buf), "do_exit reason: %s\n", uc_strerror(err));
+  my_debug_log(buf);
   if (!duplicate_exit) {
     custom_exit_reason = err;
     duplicate_exit = true;
@@ -272,6 +275,7 @@ void hook_block_exit_at(uc_engine *uc, uint64_t address, uint32_t size,
              native_hooks_state.curr_exit_at_hit_num);
       fflush(stdout);
     }
+    my_debug_log("do_exit:hit exit basic block address\n");
     do_exit(uc, UC_ERR_OK);
   }
 }
@@ -340,7 +344,14 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     if (do_print_exit_info) {
       puts("\n>>> Ran out of fuzz\n");
     }
+    fuzz_cursor = 0;
+    if (size && fuzz_cursor + size <= fuzz_size) {
 
+      memcpy(buf, &fuzz[fuzz_cursor], size);
+      fuzz_cursor += size;
+      reload_timer(fuzz_consumption_timer_id);
+      return 0;
+    }
     do_exit(uc, UC_ERR_OK);
     return 1;
   }
@@ -387,7 +398,12 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
       fflush(stdout);
     }
-
+    my_debug_log("do_exit:ran out of fuzz\n");
+    // fuzz_cursor = 0;
+    //     uint8_t *res = &fuzz[fuzz_cursor];
+    // fuzz_cursor += size;
+    // reload_timer(fuzz_consumption_timer_id);
+    // return res;
     do_exit(uc, UC_ERR_OK);
     return NULL;
   }
@@ -445,6 +461,10 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type, uint64_t addr, int size,
 #endif
 
   uint64_t val = 0;
+  // char buf[100];
+  // snprintf(buf, sizeof(buf), "mmio access to 0x%08lx, pc: 0x%08x,size: %d\n",
+  //          addr, pc, size);
+  // my_debug_log(buf);
   if (get_fuzz(uc, (uint8_t *)&val, size)) {
     return;
   }
@@ -621,21 +641,16 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   // 查找元素
   khint_t k = kh_get(dr_dt, hash_table, addr);
   if (k != kh_end(hash_table)) {
-    // 找到了元素
-    my_debug_log("found elemnet\n");
-    // my _get_fuzz
+    //   // 找到了元素
+    DataTracker *dt = kh_value(hash_table, k);
+    if (fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+      return;
+    }
   } else {
-    // 没有找到元素
 
-    // TODO: this currently assumes little endianness on both sides to be
-    // correct
-    my_debug_log("not findd elemnet\n");
     if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
       return;
     }
-
-    result_val = fuzzer_val << config->left_shift;
-    uc_mem_write(uc, addr, &result_val, size);
 
 #ifdef DEBUG
     uint32_t pc;
@@ -647,6 +662,8 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
     fflush(stdout);
 #endif
   }
+  result_val = fuzzer_val << config->left_shift;
+  uc_mem_write(uc, addr, &result_val, size);
 }
 
 void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
@@ -1035,6 +1052,7 @@ void fuzz_consumption_timeout_cb(uc_engine *uc, uint32_t id, void *user_data) {
     printf("Fuzzing input not consumed for %ld basic blocks, exiting\n",
            fuzz_consumption_timeout);
   }
+  my_debug_log("do_exit:fuzzing input not consumed\n");
   do_exit(uc, UC_ERR_OK);
 }
 
@@ -1056,6 +1074,7 @@ void instr_limit_timeout_cb(uc_engine *uc, uint32_t id, void *user_data) {
     printf("Ran into instruction limit of %lu at 0x%08x - exiting\n",
            get_timer_reload_val(instr_limit_timer_id), pc);
   }
+  my_debug_log("do_exit:ran into instruction limit\n");
   do_exit(uc, UC_ERR_OK);
 }
 
@@ -1427,14 +1446,15 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].tail_offset = 0;
   irq_dt_array[irq_dt_array_index].head_offset = 0;
   vtor_num = vtor;
-  if(hash_table == NULL){
+  if (hash_table == NULL) {
     init_dr_dt_hash();
   }
-// 插入元素
+  // 插入元素
   int ret = 0;
-  khint_t  k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
   if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
-      kh_value(hash_table, k) = irq_dt_array[irq_dt_array_index]; // 设置键对应的值
+    kh_value(hash_table, k) =
+        &irq_dt_array[irq_dt_array_index]; // 设置键对应的值
   }
   irq_dt_array_index++;
   return 0;
@@ -1480,24 +1500,38 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
 
-  my_debug_log("irq_avail_hook_handler\n");
+  // my_debug_log("irq_avail_hook_handler\n");
 
   DataTracker *dt = (DataTracker *)user_data;
 
-  if (global_partion >= fuzz_size) {
-    my_debug_log("fuzz consumed now\n");
-    do_exit(uc, UC_ERR_OK);
-    return UC_ERR_OK;
-  }
+  // if (global_partion >= fuzz_size) {
+  //   my_debug_log("fuzz consumed now\n");
+
+  //   do_exit(uc, UC_ERR_OK);
+  //   return UC_ERR_OK;
+  // }
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
+
+  short tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+  int tail_offset = tail_byte % dt->buffer_len;
+  if (tail_offset != 0 && global_partion >= fuzz_size) {
+    do_exit(uc, UC_ERR_OK);
+    my_debug_log("tail offset::do_exit\n");
+    }
+  int res = 0;
   if (dt->fifo_head != dt->fifo_tail) {
-    write_byte_to_data_reg(dt, fuzz, 4, uc);
-    return UC_ERR_OK;
+    res = dt->fifo_head - dt->fifo_tail;
   } else {
     int local_partion = 0;
     local_partion = get_current_partition(dt);
-    fill_data(dt, local_partion, uc);
+    res = fill_data(dt, local_partion, uc);
+    my_debug_log("filldata_now\n");
+  }
+  short  head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+  if(head_byte == dt->head_offset){
+    nvic_set_pending(uc, dt->irq_num, false);
+    dt->head_offset = head_byte;
   }
 
   return UC_ERR_OK;
@@ -1628,38 +1662,17 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
 
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
-  is_head_tail_equal(uc, dt);
-  int write_len = 0;
-  short sub_res = dt->fifo_head - dt->fifo_tail;
-  if (sub_res > 0) {
-    // my_debug_log("fifo data not empty\n");
 
-    // 先把fifo中的数据写入到dr中，最大长度为4，否则就取fifo中数据的长度
-    write_len = (sub_res > 4) ? 4 : sub_res;
-    uc_mem_write(uc, dt->dr, dt->fifo + dt->fifo_tail, write_len);
-    nvic_set_pending(uc, dt->irq_num, true);
-    return write_len;
-  } else if (sub_res < 0) {
-    do_exit(uc, UC_ERR_OK);
-    return write_len;
-  } else {
+  if (dt->fifo_head == dt->fifo_tail) {
     memcpy(dt->fifo, data, len);
     dt->fifo_head = len - 1;
     dt->fifo_tail = 0;
-    if (len > 4) {
-      write_len = 4;
-    } else {
-      write_len = len;
-    }
-    uc_mem_write(uc, dt->dr, data, write_len);
-    nvic_set_pending(uc, dt->irq_num, true);
-    dt->head_offset = uc_mem_read_offset_one_byte(uc, dt->rx_head);
-
-    return write_len;
   }
+  return len;
 }
 
 void my_debug_log(const char *format) {
+#ifdef MYDEBUG
   FILE *debugFile;
 
   // 打开文件，如果文件不存在则创建，如果存在则追加写入
@@ -1674,6 +1687,7 @@ void my_debug_log(const char *format) {
 
   // 关闭文件
   fclose(debugFile);
+#endif
   return;
 }
 
@@ -1700,7 +1714,6 @@ void reset_datatrcker_and_global_vars() {
   global_partion = 0;
   read_times = 0;
   random_split_size = 0;
-  read_times = 0;
   for (int i = 0; i < irq_dt_array_index; i++) {
     irq_dt_array[i].fifo_head = 0;
     irq_dt_array[i].fifo_tail = 0;
@@ -1718,4 +1731,29 @@ int init_dr_dt_hash() {
 
   // 销毁哈希表
   // kh_destroy(dr_dt, h);
+}
+
+bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
+                   uint32_t size) {
+  is_head_tail_equal(uc, dt);
+  my_debug_log("fifo_get_fuzz\n");
+  if (dt->fifo_head != dt->fifo_tail) {
+    my_debug_log("fifo_get_fuzz: fifo_head != fifo_tail\n");
+    int memcpy_size = 0;
+    if (dt->fifo_tail + size > dt->fifo_head) {
+      memcpy_size = dt->fifo_head - dt->fifo_tail;
+    } else {
+      memcpy_size = size;
+    }
+    memcpy(buf, &dt->fifo + dt->fifo_tail, memcpy_size);
+    global_partion += memcpy_size;
+    dt->fifo_tail += memcpy_size;
+    return false;
+
+  } else {
+    int local_partion = 0;
+    local_partion = get_current_partition(dt);
+    fill_data(dt, local_partion, uc);
+    return fifo_get_fuzz(uc, dt, buf, size);
+  }
 }

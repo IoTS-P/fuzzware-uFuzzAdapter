@@ -158,4 +158,5 @@ void my_debug_log(const char *format);
 int get_match_irq_num(uc_engine *uc,uint32_t irq_pc);
 void reset_datatrcker_and_global_vars();
 int init_dr_dt_hash();
+bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt,uint8_t *buf, uint32_t size);
 #endif
