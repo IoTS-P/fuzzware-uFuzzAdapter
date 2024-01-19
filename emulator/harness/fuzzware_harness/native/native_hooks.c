@@ -399,11 +399,16 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
       fflush(stdout);
     }
     my_debug_log("do_exit:ran out of fuzz\n");
-    // fuzz_cursor = 0;
-    //     uint8_t *res = &fuzz[fuzz_cursor];
-    // fuzz_cursor += size;
-    // reload_timer(fuzz_consumption_timer_id);
-    // return res;
+    fuzz_cursor = 0;
+    if (size && fuzz_cursor + size <= fuzz_size) {
+      uint8_t *res = &fuzz[fuzz_cursor];
+      fuzz_cursor += size;
+
+      // We are consuming fuzzing input, reset watchdog
+      reload_timer(fuzz_consumption_timer_id);
+
+      return res;
+    }
     do_exit(uc, UC_ERR_OK);
     return NULL;
   }
@@ -461,10 +466,6 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type, uint64_t addr, int size,
 #endif
 
   uint64_t val = 0;
-  // char buf[100];
-  // snprintf(buf, sizeof(buf), "mmio access to 0x%08lx, pc: 0x%08x,size: %d\n",
-  //          addr, pc, size);
-  // my_debug_log(buf);
   if (get_fuzz(uc, (uint8_t *)&val, size)) {
     return;
   }
@@ -655,10 +656,10 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
 #ifdef DEBUG
     uint32_t pc;
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-    printf(
-        "[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] from %d "
-        "byte input: %lx\n",
-        pc, addr, result_val, config->byte_size, fuzzer_val);
+    printf("[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] "
+           "from %d "
+           "byte input: %lx\n",
+           pc, addr, result_val, config->byte_size, fuzzer_val);
     fflush(stdout);
 #endif
   }
@@ -968,7 +969,8 @@ static void *init_bitmap(uc_engine *uc) {
       do_fuzz = 0;
     }
   } else {
-    puts("[FORKSERVER SETUP] It looks like we are not running under AFL, going "
+    puts("[FORKSERVER SETUP] It looks like we are not running under AFL, "
+         "going "
          "for single input");
     do_fuzz = 0;
   }
@@ -1248,12 +1250,12 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
   }
 
   // For every run (and to keep consistency between single and fuzzing runs),
-  // find out how many basic blocks we can execute before hitting the first MMIO
-  // read
+  // find out how many basic blocks we can execute before hitting the first
+  // MMIO read
   child_pid = fork();
   if (child_pid) {
-    // parent: wait for the discovery child to report back the number of tbs we
-    // need to execute
+    // parent: wait for the discovery child to report back the number of tbs
+    // we need to execute
     if (read(pipe_to_parent[0], &required_ticks, sizeof(required_ticks)) !=
         sizeof(required_ticks)) {
       puts("[ERROR] Could not retrieve the number of required ticks during "
@@ -1286,7 +1288,8 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
     is_discovery_child = 1;
     uc_err child_emu_status = uc_emu_start(uc, pc | 1, 0, 0, 0);
 
-    // We do not expect to get here. The child should exit by itself in get_fuzz
+    // We do not expect to get here. The child should exit by itself in
+    // get_fuzz
     printf("[ERROR] Emulation stopped using just the prefix input (%d: %s)\n",
            child_emu_status, uc_strerror(child_emu_status));
 
@@ -1344,10 +1347,10 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
 
       /* Send AFL the child pid thus it can kill it on timeout   */
       if (write(FORKSRV_FD + 1, &child_pid, 4) != 4) {
-        printf(
-            "[FORKSERVER MAIN LOOP] ERROR: Write to FORKSRV_FD+1 to send fake "
-            "child PID failed. errno: %d. Description: '%s'. Count: %d\n",
-            errno, strerror(errno), count);
+        printf("[FORKSERVER MAIN LOOP] ERROR: Write to FORKSRV_FD+1 to send "
+               "fake "
+               "child PID failed. errno: %d. Description: '%s'. Count: %d\n",
+               errno, strerror(errno), count);
         fflush(stdout);
         exit(-1);
       }
@@ -1500,36 +1503,35 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
 
-  // my_debug_log("irq_avail_hook_handler\n");
-
   DataTracker *dt = (DataTracker *)user_data;
-
-  // if (global_partion >= fuzz_size) {
-  //   my_debug_log("fuzz consumed now\n");
-
-  //   do_exit(uc, UC_ERR_OK);
-  //   return UC_ERR_OK;
-  // }
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
-
-  short tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
-  int tail_offset = tail_byte % dt->buffer_len;
-  if (tail_offset != 0 && global_partion >= fuzz_size) {
-    do_exit(uc, UC_ERR_OK);
-    my_debug_log("tail offset::do_exit\n");
-    }
+  // is_head_tail_equal(uc, dt);
+  // short tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
+  // char buf[100];
+  // snprintf(buf, sizeof(buf), "tail_byte = %d\n", tail_byte);
+  // my_debug_log(buf); tail_byte > 0 &&
+  // if (global_partion >= fuzz_size) {
+  //   do_exit(uc, UC_ERR_OK);
+  //   my_debug_log("global_partion::do_exit\n");
+  //   return UC_ERR_OK;
+  // }
   int res = 0;
   if (dt->fifo_head != dt->fifo_tail) {
     res = dt->fifo_head - dt->fifo_tail;
   } else {
+    if (global_partion != 0) {
+      do_exit(uc, UC_ERR_OK);
+      my_debug_log("global_partion::do_exit\n");
+      return UC_ERR_OK;
+    }
     int local_partion = 0;
     local_partion = get_current_partition(dt);
     res = fill_data(dt, local_partion, uc);
     my_debug_log("filldata_now\n");
   }
-  short  head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
-  if(head_byte == dt->head_offset){
+  short head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
+  if (head_byte == dt->head_offset) {
     nvic_set_pending(uc, dt->irq_num, false);
     dt->head_offset = head_byte;
   }
@@ -1628,8 +1630,6 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
   if (remain_data_len <= 0 || container_len <= 0) {
     return 0;
   }
-
-  // my_debug_log("---------------fill_data-------------\n");
 
   int need_input_len =
       (remain_data_len < container_len) ? remain_data_len : container_len;
@@ -1735,10 +1735,9 @@ int init_dr_dt_hash() {
 
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
                    uint32_t size) {
-  is_head_tail_equal(uc, dt);
-  my_debug_log("fifo_get_fuzz\n");
+  // is_head_tail_equal(uc, dt);
   if (dt->fifo_head != dt->fifo_tail) {
-    my_debug_log("fifo_get_fuzz: fifo_head != fifo_tail\n");
+    // my_debug_log("fifo_get_fuzz: fifo_head != fifo_tail\n");
     int memcpy_size = 0;
     if (dt->fifo_tail + size > dt->fifo_head) {
       memcpy_size = dt->fifo_head - dt->fifo_tail;
@@ -1751,9 +1750,10 @@ bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
     return false;
 
   } else {
-    int local_partion = 0;
-    local_partion = get_current_partition(dt);
-    fill_data(dt, local_partion, uc);
-    return fifo_get_fuzz(uc, dt, buf, size);
+    // int local_partion = 0;
+    // local_partion = get_current_partition(dt);
+    // fill_data(dt, local_partion, uc);
+    // return fifo_get_fuzz(uc, dt, buf, size);
+    return true;
   }
 }

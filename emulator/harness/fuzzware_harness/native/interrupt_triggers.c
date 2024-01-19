@@ -117,9 +117,9 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
         // Perform the actual pending
         if(trigger->irq) {
             nvic_set_pending(uc, trigger->irq, false);
-            char buf[100];
-            snprintf(buf, sizeof(buf), "[INTERRUPT TRIGGER] Pending interrupt %d\n", trigger->irq);
-            my_debug_log(buf);
+            // char buf[100];
+            // snprintf(buf, sizeof(buf), "[INTERRUPT TRIGGER] Pending interrupt %d\n", trigger->irq);
+            // my_debug_log(buf);
             ++trigger->curr_pends;
         }
     }
