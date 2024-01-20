@@ -72,12 +72,12 @@ def _hook_instruction(uc, address, size, user_data):
         my_debug_log
         ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
         my_debug_log(f"    PC: {curpc:#016x}")
-        head_offset = uc.mem_read(536873008,2)
-        head_offset = int.from_bytes(head_offset,byteorder='little')
-        my_debug_log(f"head_offset: {head_offset:#x}")
-        tail_offset = uc.mem_read(536873010,2)
-        tail_offset = int.from_bytes(tail_offset,byteorder='little')
-        my_debug_log(f"tail_offset: {tail_offset:#x}")
+        # head_offset = uc.mem_read(536873008,2)
+        # head_offset = int.from_bytes(head_offset,byteorder='little')
+        # my_debug_log(f"head_offset: {head_offset:#x}")
+        # tail_offset = uc.mem_read(536873010,2)
+        # tail_offset = int.from_bytes(tail_offset,byteorder='little')
+        # my_debug_log(f"tail_offset: {tail_offset:#x}")
     # if address == 0x80042ba:
     #     from unicorn.arm_const import UC_ARM_REG_R0
     #     r1 = uc.reg_read(UC_ARM_REG_R0+1)

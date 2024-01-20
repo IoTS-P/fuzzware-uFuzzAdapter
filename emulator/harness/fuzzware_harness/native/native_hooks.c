@@ -1421,6 +1421,10 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
   main_dt_array[main_dt_array_index].buffer_len = buffer_len;
   main_dt_array[main_dt_array_index].buffer_min_len = buffer_min_len;
   main_dt_array[main_dt_array_index].irq_num = 0;
+  main_dt_array[main_dt_array_index].fifo_head = 0;
+  main_dt_array[main_dt_array_index].fifo_tail = 0;
+  main_dt_array[main_dt_array_index].tail_offset = 0;
+  main_dt_array[main_dt_array_index].head_offset = 0;
   if (hash_table == NULL) {
     init_dr_dt_hash();
   }
@@ -1477,7 +1481,7 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
     if (main_dt_array[i].avail_pc != 0) {
       uc_hook avail_hook;
       if (uc_hook_add(uc, &avail_hook, UC_HOOK_CODE,
-                      &main_proc_avail_hook_handler, &main_dt_array[i],
+                      main_proc_avail_hook_handler, &main_dt_array[i],
                       main_dt_array[i].avail_pc,
                       main_dt_array[i].avail_pc) != UC_ERR_OK) {
         perror("Could not add avail hook\n");
@@ -1508,7 +1512,7 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
 
   DataTracker *dt = (DataTracker *)user_data;
-  if (global_partion >= fuzz_size) {
+  if (global_partion >= fuzz_size && global_partion > 0 && fuzz_size > 0 ) {
     do_exit(uc, UC_ERR_OK);
     my_debug_log("global_partion::do_exit\n");
     return UC_ERR_OK;
@@ -1517,7 +1521,7 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     int local_partion = 0;
     local_partion = get_current_partition(dt);
     fill_data(dt, local_partion, uc);
-    my_debug_log("filldata_now\n");
+    my_debug_log("main filldata_now\n");
   }
   return UC_ERR_OK;
 }
@@ -1537,7 +1541,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     int local_partion = 0;
     local_partion = get_current_partition(dt);
     fill_data(dt, local_partion, uc);
-    my_debug_log("filldata_now\n");
+    my_debug_log("irq filldata_now\n");
   }
   short head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
   if (head_byte == dt->head_offset) {
