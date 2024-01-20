@@ -1421,7 +1421,16 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
   main_dt_array[main_dt_array_index].buffer_len = buffer_len;
   main_dt_array[main_dt_array_index].buffer_min_len = buffer_min_len;
   main_dt_array[main_dt_array_index].irq_num = 0;
-
+  if (hash_table == NULL) {
+    init_dr_dt_hash();
+  }
+  // 插入元素
+  int ret = 0;
+  khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
+    kh_value(hash_table, k) =
+        &main_dt_array[main_dt_array_index]; // 设置键对应的值
+  }
   main_dt_array_index++;
   return 0;
 }
@@ -1464,17 +1473,18 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
 }
 
 int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
-  // for(int i=0;i<main_dt_array_index;i++){
-  //     if(main_dt_array[i].avail_pc!=0){
-  //         uc_hook avail_hook;
-  //         if (uc_hook_add(uc, &avail_hook, UC_HOOK_CODE,
-  //         &main_proc_avail_hook_handler, NULL, main_dt_array[i].avail_pc,
-  //         main_dt_array[i].avail_pc) != UC_ERR_OK) {
-  //             perror("Could not add avail hook\n");
-  //             return -1;
-  //         }
-  //     }
-  // }
+  for (int i = 0; i < main_dt_array_index; i++) {
+    if (main_dt_array[i].avail_pc != 0) {
+      uc_hook avail_hook;
+      if (uc_hook_add(uc, &avail_hook, UC_HOOK_CODE,
+                      &main_proc_avail_hook_handler, &main_dt_array[i],
+                      main_dt_array[i].avail_pc,
+                      main_dt_array[i].avail_pc) != UC_ERR_OK) {
+        perror("Could not add avail hook\n");
+        return -1;
+      }
+    }
+  }
   for (int i = 0; i < irq_dt_array_index; i++) {
     if (irq_dt_array[i].avail_pc != 0) {
       uc_hook irq_hook;
@@ -1496,7 +1506,19 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
 
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
-  //
+
+  DataTracker *dt = (DataTracker *)user_data;
+  if (global_partion >= fuzz_size) {
+    do_exit(uc, UC_ERR_OK);
+    my_debug_log("global_partion::do_exit\n");
+    return UC_ERR_OK;
+  }
+  if (dt->fifo_head == dt->fifo_tail) {
+    int local_partion = 0;
+    local_partion = get_current_partition(dt);
+    fill_data(dt, local_partion, uc);
+    my_debug_log("filldata_now\n");
+  }
   return UC_ERR_OK;
 }
 
@@ -1506,28 +1528,15 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   DataTracker *dt = (DataTracker *)user_data;
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
-  // is_head_tail_equal(uc, dt);
-  // short tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
-  // char buf[100];
-  // snprintf(buf, sizeof(buf), "tail_byte = %d\n", tail_byte);
-  // my_debug_log(buf); tail_byte > 0 &&
-  // if (global_partion >= fuzz_size) {
-  //   do_exit(uc, UC_ERR_OK);
-  //   my_debug_log("global_partion::do_exit\n");
-  //   return UC_ERR_OK;
-  // }
-  int res = 0;
-  if (dt->fifo_head != dt->fifo_tail) {
-    res = dt->fifo_head - dt->fifo_tail;
-  } else {
-    if (global_partion != 0) {
-      do_exit(uc, UC_ERR_OK);
-      my_debug_log("global_partion::do_exit\n");
-      return UC_ERR_OK;
-    }
+  if (global_partion >= fuzz_size) {
+    do_exit(uc, UC_ERR_OK);
+    my_debug_log("global_partion::do_exit\n");
+    return UC_ERR_OK;
+  }
+  if (dt->fifo_head == dt->fifo_tail) {
     int local_partion = 0;
     local_partion = get_current_partition(dt);
-    res = fill_data(dt, local_partion, uc);
+    fill_data(dt, local_partion, uc);
     my_debug_log("filldata_now\n");
   }
   short head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
@@ -1714,6 +1723,12 @@ void reset_datatrcker_and_global_vars() {
   global_partion = 0;
   read_times = 0;
   random_split_size = 0;
+  for (int i = 0; i < main_dt_array_index; i++) {
+    main_dt_array[i].fifo_head = 0;
+    main_dt_array[i].fifo_tail = 0;
+    main_dt_array[i].tail_offset = 0;
+    main_dt_array[i].head_offset = 0;
+  }
   for (int i = 0; i < irq_dt_array_index; i++) {
     irq_dt_array[i].fifo_head = 0;
     irq_dt_array[i].fifo_tail = 0;
@@ -1750,10 +1765,6 @@ bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
     return false;
 
   } else {
-    // int local_partion = 0;
-    // local_partion = get_current_partition(dt);
-    // fill_data(dt, local_partion, uc);
-    // return fifo_get_fuzz(uc, dt, buf, size);
     return true;
   }
 }
