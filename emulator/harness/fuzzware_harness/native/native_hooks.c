@@ -1510,9 +1510,9 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
 
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
-
+  my_debug_log("main_proc_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
-  if (global_partion >= fuzz_size && global_partion > 0 && fuzz_size > 0 ) {
+  if (global_partion >= fuzz_size && global_partion > 0 && fuzz_size > 0) {
     do_exit(uc, UC_ERR_OK);
     my_debug_log("global_partion::do_exit\n");
     return UC_ERR_OK;

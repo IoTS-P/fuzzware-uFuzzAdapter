@@ -5,7 +5,7 @@ from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 
 # 替换为你的CSV文件路径
-csv_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/PLC/fuzzware-project_old/stats/covered_bbs_by_second_into_experiment.csv'
+csv_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Console/fuzzware-project/stats/covered_bbs_by_second_into_experiment.csv'
 
 # 读取CSV文件
 data = pd.read_csv(csv_file_path, delimiter='\t')
