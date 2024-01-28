@@ -125,12 +125,11 @@ short main_dt_array_index = 0;
 short irq_dt_array_index = 0;
 int *random_split = NULL;
 size_t random_split_size = 0;
-short read_times = 0;
-short global_partion = 0;
+uint32_t global_partion = 0;
+uint32_t read_times = 0;
 uint32_t vtor_num = 0;
 
-short blocklist_interrupt[64];
-short blocklist_interrupt_index = 0;
+bool adapter_can_exit = false;
 // 定义哈希表的数据类型
 KHASH_MAP_INIT_INT(dr_dt, DataTracker *)
 khash_t(dr_dt) *hash_table = NULL;
@@ -160,6 +159,7 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
+  printf("read times: %d\n", read_times);
   reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
@@ -167,6 +167,7 @@ void do_exit(uc_engine *uc, uc_err err) {
   char buf[100];
   snprintf(buf, sizeof(buf), "do_exit reason: %s\n", uc_strerror(err));
   my_debug_log(buf);
+  
   if (!duplicate_exit) {
     custom_exit_reason = err;
     duplicate_exit = true;
@@ -344,16 +345,32 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     if (do_print_exit_info) {
       puts("\n>>> Ran out of fuzz\n");
     }
-    fuzz_cursor = 0;
-    if (size && fuzz_cursor + size <= fuzz_size) {
+    // has read DR in available interrupt
+    if (read_times > 0) {
+      // if still fuzz drained
+      if (adapter_can_exit) {
+        if (do_print_exit_info) {
+          puts("\n>>> Ran out of fuzz twice\n");
+          fflush(stdout);
+        }
+        adapter_can_exit = false;
+        my_debug_log(
+            "[Adapter]: exit fuzz because has used fuzz input another times\n");
+        do_exit(uc, UC_ERR_OK);
+      }
 
-      memcpy(buf, &fuzz[fuzz_cursor], size);
-      fuzz_cursor += size;
-      reload_timer(fuzz_consumption_timer_id);
-      return 0;
+      // reset the cursor
+      fuzz_cursor = 0;
+      my_debug_log("[Adapter]: fuzz drained first time \n");
+      adapter_can_exit = true;
+      printf("Refill the last round input with ptr %ld\n", fuzz_cursor);
+      return get_fuzz(uc, buf, size);
+    } else // the fuzz has been used not in adapter (such as interrupt )
+    {
+      my_debug_log("i think here exit\n");
+      do_exit(uc, UC_ERR_OK);
+      return 1;
     }
-    do_exit(uc, UC_ERR_OK);
-    return 1;
   }
 }
 
@@ -1487,6 +1504,13 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
         perror("Could not add avail hook\n");
         return -1;
       }
+      uc_hook read_hook;
+      if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE, main_irq_proc_read_hook_handler,
+                      &main_dt_array[i], main_dt_array[i].read_pc,
+                      main_dt_array[i].read_pc) != UC_ERR_OK) {
+        perror("Could not add read hook\n");
+        return -1;
+      }
     }
   }
   for (int i = 0; i < irq_dt_array_index; i++) {
@@ -1502,26 +1526,67 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
       } else {
         my_debug_log("avail hook added\n");
       }
+
+            uc_hook read_hook;
+      if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE, main_irq_proc_read_hook_handler,
+                      &irq_dt_array[i], irq_dt_array[i].read_pc,
+                      irq_dt_array[i].read_pc) != UC_ERR_OK) {
+        perror("Could not add read hook\n");
+        return -1;
+      }
     }
   }
 
   return 0;
 }
 
+uc_err main_irq_proc_read_hook_handler(uc_engine *uc, uint64_t pc,
+                                       uint32_t size, void *user_data) {
+  read_times++;
+  my_debug_log("read_times++\n");
+  return UC_ERR_OK;
+}
+
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
-  my_debug_log("main_proc_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
-  if (global_partion >= fuzz_size && global_partion > 0 && fuzz_size > 0) {
-    do_exit(uc, UC_ERR_OK);
-    my_debug_log("global_partion::do_exit\n");
+  if (read_times == global_partion) {
+    printf("[Adapter]: Hit enough times %d\n",
+           read_times);
+    read_times = 0;
+  } else if (!read_times) // start of one round
+  {
+    // refill success
+    if (adapter_can_exit) {
+      if (do_print_exit_info) {
+        my_debug_log("[Adapter]: exit fuzz because has step into available "
+                     "point after one round\n");
+      }
+      adapter_can_exit = false;
+      puts("\n>>> Ran out of fuzz with refill \n");
+      do_exit(uc, UC_ERR_OK);
+my_debug_log("global_partion::do_exit\n");
     return UC_ERR_OK;
-  }
-  if (dt->fifo_head == dt->fifo_tail) {
-    int local_partion = 0;
-    local_partion = get_current_partition(dt);
-    fill_data(dt, local_partion, uc);
-    my_debug_log("main filldata_now\n");
+    }
+    if (dt->fifo_head == dt->fifo_tail) {
+      int local_partion = 0;
+      local_partion = get_current_partition(dt);
+      fill_data(dt, local_partion, uc);
+      my_debug_log("main filldata_now\n");
+    }
+  } else // in one round
+  {
+#ifdef DEBUG
+    printf("[Adapter]: Read DR for %d times\n",
+           read_times);
+    fflush(stdout);
+#endif
+    if (dt->fifo_head == dt->fifo_tail) {
+      int local_partion = 0;
+      local_partion = get_current_partition(dt);
+      fill_data(dt, local_partion, uc);
+      my_debug_log("main filldata_now\n");
+    }
   }
   return UC_ERR_OK;
 }
@@ -1532,23 +1597,56 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   DataTracker *dt = (DataTracker *)user_data;
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
-  if (global_partion >= fuzz_size) {
-    do_exit(uc, UC_ERR_OK);
-    my_debug_log("global_partion::do_exit\n");
-    return UC_ERR_OK;
-  }
-  if (dt->fifo_head == dt->fifo_tail) {
-    int local_partion = 0;
-    local_partion = get_current_partition(dt);
-    fill_data(dt, local_partion, uc);
-    my_debug_log("irq filldata_now\n");
-  }
-  short head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
-  if (head_byte == dt->head_offset) {
-    nvic_set_pending(uc, dt->irq_num, false);
-    dt->head_offset = head_byte;
-  }
 
+  if (read_times == global_partion) {
+    printf("[Adapter]: Hit enough times %d\n",
+           read_times);
+    read_times = 0;
+  } else if (!read_times) // start of one round
+  {
+    // refill success
+    if (adapter_can_exit) {
+      if (do_print_exit_info) {
+        my_debug_log("[Adapter]: exit fuzz because has step into available "
+                     "point after one round\n");
+      }
+      adapter_can_exit = false;
+      puts("\n>>> Ran out of fuzz with refill \n");
+      do_exit(uc, UC_ERR_OK);
+    }
+    char buf[100];
+    if (dt->fifo_head == dt->fifo_tail) {
+      int local_partion = 0;
+      local_partion = get_current_partition(dt);
+      int res_len = fill_data(dt, local_partion, uc);
+      
+      snprintf(buf, sizeof(buf), "fill_data return %d\n", res_len);
+      my_debug_log(buf);
+      my_debug_log("irq filldata_now\n");
+    }
+    my_debug_log("interrupt filldata_now\n");
+    snprintf(buf,sizeof(buf),"dt->irq_num = %d\n",dt->irq_num);
+    my_debug_log(buf);
+    nvic_set_pending(uc, dt->irq_num, false);
+  } else // in one round
+  {
+#ifdef DEBUG
+    printf("[Adapter]: Read DR for %d times\n",
+           read_times);
+    printf("[Adapter]: trigger irq \n");
+    fflush(stdout);
+#endif
+    if (dt->fifo_head == dt->fifo_tail) {
+      int local_partion = 0;
+      local_partion = get_current_partition(dt);
+      int res_len = fill_data(dt, local_partion, uc);
+      char buf[100];
+      snprintf(buf, sizeof(buf), "fill_data return %d\n", res_len);
+      my_debug_log(buf);
+      my_debug_log("irq filldata_now\n");
+    }
+    nvic_set_pending(uc, dt->irq_num, false);
+  }
   return UC_ERR_OK;
 }
 
@@ -1716,7 +1814,6 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
     uc_mem_read(uc, irq_handler_memory_addr, &irq_handler_memory_value,
                 sizeof(irq_handler_memory_value));
     if (abs((int)(irq_handler_memory_value - irq_pc)) <= 4) {
-      blocklist_interrupt[blocklist_interrupt_index++] = irq_num;
       return irq_num;
     }
   }

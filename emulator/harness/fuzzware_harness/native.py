@@ -30,6 +30,7 @@ uc_engine = ctypes.c_void_p
 def _load_lib(path):
     try:
         lib_file = os.path.join(path)
+        print("Loading native library from {}".format(lib_file))
         dll = ctypes.cdll.LoadLibrary(lib_file)
         return dll
     except OSError as e:

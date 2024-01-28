@@ -6,7 +6,7 @@ INC=-I$(OWN_DIR)/../../../unicorn/$(UC_DIRNAME)/include
 BIN_EXT = .so
 
 CC = clang
-CFLAGS += -fpic -Wall -Werror $(INC) -g -O3 
+CFLAGS += -fpic -Wall -Werror $(INC) -g -O3
 LDFLAGS += -shared -L$(LIBDIR) -lunicorn
 
 .PHONY: all clean
