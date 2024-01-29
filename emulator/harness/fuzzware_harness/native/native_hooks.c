@@ -1737,39 +1737,40 @@ short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr) {
 
 // Function to fill data
 int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
-  size_t remain_data_len = fuzz_size - global_partion;
+  // Check if there is any data left to process
+  size_t remain_data_len = fuzz_size - fuzz_cursor;
   if (remain_data_len <= 0 || container_len <= 0) {
     return 0;
   }
 
-  int need_input_len =
-      (remain_data_len < container_len) ? remain_data_len : container_len;
+  // Determine the length of data needed
+  int need_input_len = (remain_data_len < container_len) ? remain_data_len : container_len;
+  size_t buffer_min_len = dt->buffer_min_len > 1 ? dt->buffer_min_len : 1;
+
+  // Calculate padding length if needed
   int padding_len = 0;
-  size_t buffer_min_len = 1;
-  if (dt->buffer_min_len > 1) {
-    buffer_min_len = dt->buffer_min_len;
+  if (need_input_len < buffer_min_len) {
+    padding_len = buffer_min_len - need_input_len;
+    need_input_len = buffer_min_len; // Update need_input_len to include padding
   }
 
-  if (need_input_len < buffer_min_len) {
-    // TODO: Handle the case where there is not enough data (padding)
-    // my_debug_log("need_input_len < buffer_min_len\n");
-    padding_len = buffer_min_len - need_input_len;
-  }
-  uint8_t random_input[buffer_min_len]; // Ensure this is large enough for the
-                                        // maximum padding
-  if (padding_len > 0) {
-    // Fill with padding data
-    memcpy(random_input, fuzz, padding_len);
-    // my_debug_log("add the padding data to the input\n");
-  }
+  // Initialize data_input with zeros
+  uint8_t data_input[container_len];
+  memset(data_input, 0, container_len);
+
+  // Copy the actual data into data_input, up to need_input_len - padding_len
+  memcpy(data_input, fuzz + fuzz_cursor, need_input_len - padding_len);
+
+  // Update the fuzz_cursor position
+  fuzz_cursor += (need_input_len - padding_len);
+
   // Write the data to the data register
-  int write_len =
-      write_byte_to_data_reg(dt, fuzz + global_partion, need_input_len, uc);
-  if (padding_len > 0) {
-    write_len += write_byte_to_data_reg(dt, random_input, padding_len, uc);
-  }
+  int write_len = write_byte_to_data_reg(dt, data_input, need_input_len, uc);
+
+  // Return the number of bytes written
   return write_len;
 }
+
 
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
