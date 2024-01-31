@@ -369,6 +369,7 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     {
       my_debug_log("i think here exit\n");
       do_exit(uc, UC_ERR_OK);
+      fuzz_cursor = 0;
       return 1;
     }
   }
@@ -1555,7 +1556,7 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
   DataTracker *dt = (DataTracker *)user_data;
   if (read_times == global_partion) {
-    printf("[Adapter]: Hit enough times %d\n", read_times);
+    
     read_times = 0;
   } else if (!read_times) // start of one round
   {
@@ -1601,7 +1602,6 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
 
   if (read_times == global_partion) {
-    printf("[Adapter]: Hit enough times %d\n", read_times);
     read_times = 0;
   } else if (!read_times) // start of one round
   {
