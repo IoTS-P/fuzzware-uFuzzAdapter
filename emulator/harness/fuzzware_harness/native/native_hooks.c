@@ -369,7 +369,6 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     {
       my_debug_log("i think here exit\n");
       do_exit(uc, UC_ERR_OK);
-      fuzz_cursor = 0;
       return 1;
     }
   }
@@ -1507,14 +1506,14 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
         perror("Could not add avail hook\n");
         return -1;
       }
-      uc_hook read_hook;
-      if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
-                      main_irq_proc_read_hook_handler, &main_dt_array[i],
-                      main_dt_array[i].read_pc,
-                      main_dt_array[i].read_pc) != UC_ERR_OK) {
-        perror("Could not add read hook\n");
-        return -1;
-      }
+      // uc_hook read_hook;
+      // if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
+      //                 main_irq_proc_read_hook_handler, &main_dt_array[i],
+      //                 main_dt_array[i].read_pc,
+      //                 main_dt_array[i].read_pc) != UC_ERR_OK) {
+      //   perror("Could not add read hook\n");
+      //   return -1;
+      // }
     }
   }
   for (int i = 0; i < irq_dt_array_index; i++) {
@@ -1531,32 +1530,32 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
         my_debug_log("avail hook added\n");
       }
 
-      uc_hook read_hook;
-      if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
-                      main_irq_proc_read_hook_handler, &irq_dt_array[i],
-                      irq_dt_array[i].read_pc,
-                      irq_dt_array[i].read_pc) != UC_ERR_OK) {
-        perror("Could not add read hook\n");
-        return -1;
-      }
+      // uc_hook read_hook;
+      // if (uc_hook_add(uc, &read_hook, UC_HOOK_CODE,
+      //                 main_irq_proc_read_hook_handler, &irq_dt_array[i],
+      //                 irq_dt_array[i].read_pc,
+      //                 irq_dt_array[i].read_pc) != UC_ERR_OK) {
+      //   perror("Could not add read hook\n");
+      //   return -1;
+      // }
     }
   }
 
   return 0;
 }
 
-uc_err main_irq_proc_read_hook_handler(uc_engine *uc, uint64_t pc,
-                                       uint32_t size, void *user_data) {
-  read_times++;
-  my_debug_log("read_times++\n");
-  return UC_ERR_OK;
-}
+// uc_err main_irq_proc_read_hook_handler(uc_engine *uc, uint64_t pc,
+//                                        uint32_t size, void *user_data) {
+//   read_times++;
+//   my_debug_log("read_times++\n");
+//   return UC_ERR_OK;
+// }
 
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
   DataTracker *dt = (DataTracker *)user_data;
-  if (read_times == global_partion) {
-    
+  if (read_times == global_partion && global_partion !=0) {
+    printf("[Adapter]: Hit enough times %d\n", read_times);
     read_times = 0;
   } else if (!read_times) // start of one round
   {
@@ -1601,7 +1600,8 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
 
-  if (read_times == global_partion) {
+  if (read_times == global_partion && global_partion !=0) {
+    printf("[Adapter]: Hit enough times %d\n", read_times);
     read_times = 0;
   } else if (!read_times) // start of one round
   {
@@ -1615,19 +1615,11 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       puts("\n>>> Ran out of fuzz with refill \n");
       do_exit(uc, UC_ERR_OK);
     }
-    char buf[100];
     if (dt->fifo_head == dt->fifo_tail) {
       int local_partion = 0;
       local_partion = get_current_partition(dt);
       int res_len = fill_data(dt, local_partion, uc);
-
-      snprintf(buf, sizeof(buf), "fill_data return %d\n", res_len);
-      my_debug_log(buf);
-      my_debug_log("irq filldata_now\n");
     }
-    my_debug_log("interrupt filldata_now\n");
-    snprintf(buf, sizeof(buf), "dt->irq_num = %d\n", dt->irq_num);
-    my_debug_log(buf);
     nvic_set_pending(uc, dt->irq_num, false);
   } else // in one round
   {
@@ -1640,10 +1632,6 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       int local_partion = 0;
       local_partion = get_current_partition(dt);
       int res_len = fill_data(dt, local_partion, uc);
-      char buf[100];
-      snprintf(buf, sizeof(buf), "fill_data return %d\n", res_len);
-      my_debug_log(buf);
-      my_debug_log("irq filldata_now\n");
     }
     nvic_set_pending(uc, dt->irq_num, false);
   }
@@ -1761,20 +1749,12 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
 
   // Copy the actual data into data_input, up to need_input_len - padding_len
   memcpy(data_input, fuzz + fuzz_cursor, need_input_len - padding_len);
-  char buf[100];
-  snprintf(buf,sizeof(buf),"fuzz_cursor = %ld, need_input_len = %d, padding_len = %d\n",fuzz_cursor,need_input_len,padding_len);
-  my_debug_log(buf);
-  for (int i = 0; i < need_input_len - padding_len; i++) {
-    snprintf(buf,sizeof(buf),"data_input[%d] = %x\n",i,data_input[i]);
-    my_debug_log(buf);
-  }
+
   // Update the fuzz_cursor position
   fuzz_cursor += (need_input_len - padding_len);
-  snprintf(buf,sizeof(buf),"after fuzz_cursor = %ld\n ",fuzz_cursor);
-  my_debug_log(buf);
   // Write the data to the data register
   int write_len = write_byte_to_data_reg(dt, data_input, need_input_len, uc);
-
+  global_partion += write_len;
   // Return the number of bytes written
   return write_len;
 }
@@ -1860,6 +1840,7 @@ int init_dr_dt_hash() {
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
                    uint32_t size) {
   // is_head_tail_equal(uc, dt);
+  read_times++;
   if (dt->fifo_head != dt->fifo_tail) {
     // my_debug_log("fifo_get_fuzz: fifo_head != fifo_tail\n");
     int memcpy_size = 0;
@@ -1869,7 +1850,6 @@ bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
       memcpy_size = size;
     }
     memcpy(buf, &dt->fifo + dt->fifo_tail, memcpy_size);
-    global_partion += memcpy_size;
     dt->fifo_tail += memcpy_size;
     return false;
 
