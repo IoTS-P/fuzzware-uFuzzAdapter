@@ -19,6 +19,7 @@ typedef struct DataTracker {
     uint8_t fifo[4096];
     short fifo_head;
     short fifo_tail;
+    int interrupt_times;
 } DataTracker;
 
 #endif
