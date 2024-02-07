@@ -370,8 +370,8 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
     } else // the fuzz has been used not in adapter (such as interrupt )
     {
       // my_debug_log("i think here exit\n");
-      // do_exit(uc, UC_ERR_OK);
-      // fuzz_cursor = 0;
+      if(fuzz_size == 0)
+        do_exit(uc, UC_ERR_OK);
       return 1;
     }
   }
@@ -1444,12 +1444,12 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
     init_dr_dt_hash();
   }
   // 插入元素
-  int ret = 0;
-  khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
-  if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
-    kh_value(hash_table, k) =
-        &main_dt_array[main_dt_array_index]; // 设置键对应的值
-  }
+  // int ret = 0;
+  // khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  // if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
+  //   kh_value(hash_table, k) =
+  //       &main_dt_array[main_dt_array_index]; // 设置键对应的值
+  // }
   main_dt_array_index++;
   return 0;
 }
@@ -1546,41 +1546,39 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
 
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
-  DataTracker *dt = (DataTracker *)user_data;
-  if (read_times == global_partion && global_partion != 0) {
-    printf("[Adapter]: Hit enough times %d\n", read_times);
-    read_times = 0;
-  } else if (!read_times) // start of one round
-  {
-    // refill success
-    if (adapter_can_exit) {
-      if (do_print_exit_info) {
-        my_debug_log("[Adapter]: exit fuzz because has step into available "
-                     "point after one round\n");
-      }
-      adapter_can_exit = false;
-      puts("\n>>> Ran out of fuzz with refill \n");
-      do_exit(uc, UC_ERR_OK);
-      my_debug_log("global_partion::do_exit\n");
-      return UC_ERR_OK;
-    }
-    if (dt->fifo_head == dt->fifo_tail) {
-      int local_partion = 0;
-      local_partion = get_current_partition(dt);
-      fill_data(dt, local_partion, uc);
-    }
-  } else // in one round
-  {
-#ifdef DEBUG
-    printf("[Adapter]: Read DR for %d times\n", read_times);
-    fflush(stdout);
-#endif
-    if (dt->fifo_head == dt->fifo_tail) {
-      int local_partion = 0;
-      local_partion = get_current_partition(dt);
-      fill_data(dt, local_partion, uc);
-    }
-  }
+  // DataTracker *dt = (DataTracker *)user_data;
+  read_times++;
+  // if (read_times == global_partion && global_partion != 0) {
+  //   printf("[Adapter]: Hit enough times %d\n", read_times);
+  //   read_times = 0;
+  // } else if (!read_times) // start of one round
+  // {
+  //   // refill success
+  //   if (adapter_can_exit) {
+  //     if (do_print_exit_info) {
+  //       my_debug_log("[Adapter]: exit fuzz because has step into available "
+  //                    "point after one round\n");
+  //     }
+  //     adapter_can_exit = false;
+  //     puts("\n>>> Ran out of fuzz with refill \n");
+  //     do_exit(uc, UC_ERR_OK);
+  //     my_debug_log("global_partion::do_exit\n");
+  //     return UC_ERR_OK;
+  //   }
+  //   if (dt->fifo_head == dt->fifo_tail) {
+  //     int local_partion = 0;
+  //     local_partion = get_current_partition(dt);
+  //     fill_data(dt, local_partion, uc);
+  //   }
+
+  // } else // in one round
+  // {
+  //   if (dt->fifo_head == dt->fifo_tail) {
+  //     int local_partion = 0;
+  //     local_partion = get_current_partition(dt);
+  //     fill_data(dt, local_partion, uc);
+  //   }
+  // }
   return UC_ERR_OK;
 }
 
@@ -1611,27 +1609,29 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       local_partion = get_current_partition(dt);
       fill_data(dt, local_partion, uc);
     }
-    if (dt->interrupt_times > global_partion*10) {
+    if (dt->interrupt_times > global_partion * 10) {
       adapter_can_exit = true;
-      read_times = 0;
     }
     nvic_set_pending(uc, dt->irq_num, false);
     dt->interrupt_times++;
   } else // in one round
   {
-#ifdef DEBUG
-    printf("[Adapter]: Read DR for %d times\n", read_times);
-    printf("[Adapter]: trigger irq \n");
-    fflush(stdout);
-#endif
+    if (adapter_can_exit) {
+      if (do_print_exit_info) {
+        my_debug_log("[Adapter]: exit fuzz because has step into available "
+                     "point after one round\n");
+      }
+      adapter_can_exit = false;
+      puts("\n>>> Ran out of fuzz with refill \n");
+      do_exit(uc, UC_ERR_OK);
+    }
     if (dt->fifo_head == dt->fifo_tail) {
       int local_partion = 0;
       local_partion = get_current_partition(dt);
       fill_data(dt, local_partion, uc);
     }
-    if (dt->interrupt_times > global_partion*10) {
+    if (dt->interrupt_times > global_partion * 10) {
       adapter_can_exit = true;
-      read_times = 0;
     }
     nvic_set_pending(uc, dt->irq_num, false);
     dt->interrupt_times++;

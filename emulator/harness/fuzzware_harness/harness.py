@@ -267,7 +267,7 @@ def configure_unicorn(args):
     from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,_hook_instruction
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
-    # uc.hook_add(UC_HOOK_CODE, _hook_instruction, None,0x080007d0,0x800089a)
+    # uc.hook_add(UC_HOOK_CODE, _hook_instruction, None)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
     # MMIO modeling and listener setup
