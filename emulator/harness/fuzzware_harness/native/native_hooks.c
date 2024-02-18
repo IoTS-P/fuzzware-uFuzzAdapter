@@ -128,6 +128,7 @@ size_t random_split_size = 0;
 uint32_t global_partion = 0;
 uint32_t read_times = 0;
 uint32_t vtor_num = 0;
+uint32_t stop_count = 0;
 
 bool adapter_can_exit = false;
 // 定义哈希表的数据类型
@@ -164,12 +165,11 @@ void do_exit(uc_engine *uc, uc_err err) {
   if (do_print_exit_info) {
     fflush(stdout);
   }
-#ifdef MYDEBUG
+  #ifdef MYDEBUG
   char buf[100];
-  snprintf(buf, sizeof(buf), "do_exit reason: %s\n", uc_strerror(err));
+  sprintf(buf, "exit with error code %d\n", err);
   my_debug_log(buf);
-#endif
-
+  #endif
   if (!duplicate_exit) {
     custom_exit_reason = err;
     duplicate_exit = true;
@@ -278,7 +278,6 @@ void hook_block_exit_at(uc_engine *uc, uint64_t address, uint32_t size,
              native_hooks_state.curr_exit_at_hit_num);
       fflush(stdout);
     }
-    my_debug_log("do_exit:hit exit basic block address\n");
     do_exit(uc, UC_ERR_OK);
   }
 }
@@ -369,7 +368,6 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
       return get_fuzz(uc, buf, size);
     } else // the fuzz has been used not in adapter (such as interrupt )
     {
-      // my_debug_log("i think here exit\n");
       if(fuzz_size == 0)
         do_exit(uc, UC_ERR_OK);
       return 1;
@@ -1537,12 +1535,6 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
   return 0;
 }
 
-// uc_err main_irq_proc_read_hook_handler(uc_engine *uc, uint64_t pc,
-//                                        uint32_t size, void *user_data) {
-//   read_times++;
-//   my_debug_log("read_times++\n");
-//   return UC_ERR_OK;
-// }
 
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
@@ -1584,14 +1576,14 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
-
   DataTracker *dt = (DataTracker *)user_data;
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
 
-  if (read_times == global_partion && global_partion != 0) {
+  if (read_times == global_partion>>1 && global_partion != 0) {
     printf("[Adapter]: Hit enough times %d\n", read_times);
     read_times = 0;
+    adapter_can_exit = true;
   } else if (!read_times) // start of one round
   {
     // refill success
@@ -1607,10 +1599,12 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     if (dt->fifo_head == dt->fifo_tail) {
       int local_partion = 0;
       local_partion = get_current_partition(dt);
+      stop_count = local_partion>>1;
       fill_data(dt, local_partion, uc);
     }
-    if (dt->interrupt_times > global_partion * 10) {
-      adapter_can_exit = true;
+        if (!stop_for_firmware_read_datareg()) {
+      my_debug_log("stop for a while");
+      return UC_ERR_OK;
     }
     nvic_set_pending(uc, dt->irq_num, false);
     dt->interrupt_times++;
@@ -1628,10 +1622,12 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     if (dt->fifo_head == dt->fifo_tail) {
       int local_partion = 0;
       local_partion = get_current_partition(dt);
+      stop_count = local_partion>>1;
       fill_data(dt, local_partion, uc);
     }
-    if (dt->interrupt_times > global_partion * 10) {
-      adapter_can_exit = true;
+        if (!stop_for_firmware_read_datareg()) {
+      my_debug_log("stop for a while");
+      return UC_ERR_OK;
     }
     nvic_set_pending(uc, dt->irq_num, false);
     dt->interrupt_times++;
@@ -1788,7 +1784,6 @@ void my_debug_log(const char *format) {
 }
 
 int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
-  my_debug_log("get_match_irq_num\n");
   int num_enabled = get_num_enabled();
   int irq_num = 0;
   uint64_t irq_handler_memory_addr;
@@ -1838,7 +1833,6 @@ int init_dr_dt_hash() {
 
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
                    uint32_t size) {
-  // is_head_tail_equal(uc, dt);
   read_times++;
   if (dt->fifo_head != dt->fifo_tail) {
     int memcpy_size = 0;
@@ -1848,10 +1842,30 @@ bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
       memcpy_size = size;
     }
     memcpy(buf, &dt->fifo + dt->fifo_tail, memcpy_size);
+    // #ifdef MYDEBUG
+    char debug_buf[100];
+    snprintf(debug_buf, sizeof(debug_buf), "memcpy_size = %d\n", memcpy_size);
+    my_debug_log(debug_buf);
+    my_debug_log("buf=");
+    for (int i = 0; i < memcpy_size; i++) {
+      snprintf(debug_buf, sizeof(debug_buf), "%x ", buf[i]);
+      my_debug_log(debug_buf);
+    }
+    my_debug_log("buf end");
+    // #endif
     dt->fifo_tail += memcpy_size;
     return false;
 
   } else {
     return true;
+  }
+}
+
+int stop_for_firmware_read_datareg(){
+  if(stop_count--){
+    return 0;
+  }
+  else{
+    return 1;
   }
 }
