@@ -165,11 +165,11 @@ void do_exit(uc_engine *uc, uc_err err) {
   if (do_print_exit_info) {
     fflush(stdout);
   }
-  #ifdef MYDEBUG
+#ifdef MYDEBUG
   char buf[100];
   sprintf(buf, "exit with error code %d\n", err);
   my_debug_log(buf);
-  #endif
+#endif
   if (!duplicate_exit) {
     custom_exit_reason = err;
     duplicate_exit = true;
@@ -347,28 +347,32 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
     }
     // has read DR in available interrupt
-    if (read_times > global_partion) {
-      // if still fuzz drained
-      if (adapter_can_exit) {
-        if (do_print_exit_info) {
-          puts("\n>>> Ran out of fuzz twice\n");
-          fflush(stdout);
-        }
-        adapter_can_exit = false;
-        my_debug_log(
-            "[Adapter]: exit fuzz because has used fuzz input another times\n");
-        do_exit(uc, UC_ERR_OK);
+    if (read_times >= global_partion) {
+    // if still fuzz drained
+    if (fuzz_size == 0){
+      do_exit(uc, UC_ERR_OK);
+      return 1;
+    }
+    if (adapter_can_exit) {
+      if (do_print_exit_info) {
+        puts("\n>>> Ran out of fuzz twice\n");
+        fflush(stdout);
       }
+      adapter_can_exit = false;
+      my_debug_log(
+          "[Adapter]: exit fuzz because has used fuzz input another times\n");
+      do_exit(uc, UC_ERR_OK);
+    }
 
-      // reset the cursor
-      fuzz_cursor = 0;
-      my_debug_log("[Adapter]: fuzz drained first time \n");
-      adapter_can_exit = true;
-      printf("Refill the last round input with ptr %ld\n", fuzz_cursor);
-      return get_fuzz(uc, buf, size);
+    // reset the cursor
+    fuzz_cursor = 0;
+    my_debug_log("[Adapter]: fuzz drained first time \n");
+    adapter_can_exit = true;
+    printf("Refill the last round input with ptr %ld\n", fuzz_cursor);
+    return get_fuzz(uc, buf, size);
     } else // the fuzz has been used not in adapter (such as interrupt )
     {
-      if(fuzz_size == 0)
+      if (fuzz_size == 0)
         do_exit(uc, UC_ERR_OK);
       return 1;
     }
@@ -665,12 +669,10 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
     if (fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
       return;
     }
+  }
 
-  } else {
-
-    if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-      return;
-    }
+  if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+    return;
 
 #ifdef DEBUG
 
@@ -1535,7 +1537,6 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
   return 0;
 }
 
-
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
   // DataTracker *dt = (DataTracker *)user_data;
@@ -1580,7 +1581,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   dt->irq_num =
       (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
 
-  if (read_times == global_partion>>1 && global_partion != 0) {
+  if (read_times == global_partion>>2 && global_partion != 0) {
     printf("[Adapter]: Hit enough times %d\n", read_times);
     read_times = 0;
     adapter_can_exit = true;
@@ -1596,20 +1597,23 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       puts("\n>>> Ran out of fuzz with refill \n");
       do_exit(uc, UC_ERR_OK);
     }
-    if (dt->fifo_head == dt->fifo_tail) {
+    if (dt->interrupt_times == 0) {
+      if (!stop_for_firmware_read_datareg()) {
+        my_debug_log("stop for a while");
+        return UC_ERR_OK;
+      }
       int local_partion = 0;
       local_partion = get_current_partition(dt);
-      stop_count = local_partion>>1;
-      fill_data(dt, local_partion, uc);
+      global_partion += local_partion;
+      dt->interrupt_times = local_partion;
+      stop_count = local_partion>>2;
+    } else {
+      nvic_set_pending(uc, dt->irq_num, false);
+      dt->interrupt_times--;
     }
-        if (!stop_for_firmware_read_datareg()) {
-      my_debug_log("stop for a while");
-      return UC_ERR_OK;
-    }
-    nvic_set_pending(uc, dt->irq_num, false);
-    dt->interrupt_times++;
   } else // in one round
   {
+    // refill success
     if (adapter_can_exit) {
       if (do_print_exit_info) {
         my_debug_log("[Adapter]: exit fuzz because has step into available "
@@ -1619,18 +1623,19 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
       puts("\n>>> Ran out of fuzz with refill \n");
       do_exit(uc, UC_ERR_OK);
     }
-    if (dt->fifo_head == dt->fifo_tail) {
+    if (dt->interrupt_times == 0) {
+      if (!stop_for_firmware_read_datareg()) {
+        my_debug_log("stop for a while");
+        return UC_ERR_OK;
+      }
       int local_partion = 0;
       local_partion = get_current_partition(dt);
-      stop_count = local_partion>>1;
-      fill_data(dt, local_partion, uc);
+      dt->interrupt_times = local_partion;
+      stop_count = local_partion>>2;
+    } else {
+      nvic_set_pending(uc, dt->irq_num, false);
+      dt->interrupt_times--;
     }
-        if (!stop_for_firmware_read_datareg()) {
-      my_debug_log("stop for a while");
-      return UC_ERR_OK;
-    }
-    nvic_set_pending(uc, dt->irq_num, false);
-    dt->interrupt_times++;
   }
   return UC_ERR_OK;
 }
@@ -1834,38 +1839,37 @@ int init_dr_dt_hash() {
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
                    uint32_t size) {
   read_times++;
-  if (dt->fifo_head != dt->fifo_tail) {
-    int memcpy_size = 0;
-    if (dt->fifo_tail + size > dt->fifo_head) {
-      memcpy_size = dt->fifo_head - dt->fifo_tail;
-    } else {
-      memcpy_size = size;
-    }
-    memcpy(buf, &dt->fifo + dt->fifo_tail, memcpy_size);
-    // #ifdef MYDEBUG
-    char debug_buf[100];
-    snprintf(debug_buf, sizeof(debug_buf), "memcpy_size = %d\n", memcpy_size);
-    my_debug_log(debug_buf);
-    my_debug_log("buf=");
-    for (int i = 0; i < memcpy_size; i++) {
-      snprintf(debug_buf, sizeof(debug_buf), "%x ", buf[i]);
-      my_debug_log(debug_buf);
-    }
-    my_debug_log("buf end");
-    // #endif
-    dt->fifo_tail += memcpy_size;
-    return false;
+  return true;
+  // if (dt->fifo_head != dt->fifo_tail) {
+  //   int memcpy_size = 0;
+  //   if (dt->fifo_tail + size > dt->fifo_head) {
+  //     memcpy_size = dt->fifo_head - dt->fifo_tail;
+  //   } else {
+  //     memcpy_size = size;
+  //   }
+  //   memcpy(buf, &dt->fifo + dt->fifo_tail, memcpy_size);
+  //   // #ifdef MYDEBUG
+  //   char debug_buf[100];
+  //   snprintf(debug_buf, sizeof(debug_buf), "memcpy_size = %d\n",
+  //   memcpy_size); my_debug_log(debug_buf); my_debug_log("buf="); for (int i =
+  //   0; i < memcpy_size; i++) {
+  //     snprintf(debug_buf, sizeof(debug_buf), "%x ", buf[i]);
+  //     my_debug_log(debug_buf);
+  //   }
+  //   my_debug_log("buf end");
+  //   // #endif
+  //   dt->fifo_tail += memcpy_size;
+  //   return false;
 
-  } else {
-    return true;
-  }
+  // } else {
+  //   return true;
+  // }
 }
 
-int stop_for_firmware_read_datareg(){
-  if(stop_count--){
+int stop_for_firmware_read_datareg() {
+  if (stop_count--) {
     return 0;
-  }
-  else{
+  } else {
     return 1;
   }
 }
