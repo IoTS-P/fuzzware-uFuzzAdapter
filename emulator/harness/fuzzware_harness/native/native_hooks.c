@@ -1521,6 +1521,11 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
   return 0;
 }
 
+uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
+                                    void *user_data) {
+  read_times++;
+  return UC_ERR_OK;
+}
 
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {

@@ -144,9 +144,6 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data);
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data);
-uc_err main_irq_proc_read_hook_handler(
-    uc_engine *uc, uint64_t pc, uint32_t size,
-    void *user_data);
 int ufuzz_adapter_add_avail_hook(uc_engine *uc);
 int get_current_partition(DataTracker *dt);
 int random_split_data_input(DataTracker *dt);
