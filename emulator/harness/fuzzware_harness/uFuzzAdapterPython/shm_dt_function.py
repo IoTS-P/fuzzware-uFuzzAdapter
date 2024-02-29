@@ -69,25 +69,39 @@ def _hook_instruction(uc, address, size, user_data):
     curpc = uc.reg_read(UC_ARM_REG_PC)
     mem = uc.mem_read(address, size)
 
-    for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):
-        my_debug_log
-        ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
-        my_debug_log(f"    PC: {curpc:#016x}")
-    # head_offset = uc.mem_read(536873008,2)
-    # head_offset = int.from_bytes(head_offset,byteorder='little')
-    # my_debug_log(f"head_offset: {head_offset:#x}")
-    # tail_offset = uc.mem_read(536873010,2)
-    # tail_offset = int.from_bytes(tail_offset,byteorder='little')
-    # my_debug_log(f"tail_offset: {tail_offset:#x}")
-    # if address == 0x80042ba:
-    #     from unicorn.arm_const import UC_ARM_REG_R0
-    #     r1 = uc.reg_read(UC_ARM_REG_R0+1)
-    #     r2 = uc.reg_read(UC_ARM_REG_R0+2)
-    #     charc = uc.mem_read(r1+r2,4)
-    #     my_debug_log(f"r1: {r1:#x}")
-    #     my_debug_log(f"r2: {r2:#x}")
-    #     my_debug_log(f"charc: {charc}")
-    #     dr = 0x4000
+
+    
+    buffer_mem = uc.mem_read(0x20000345,10)
+    if buffer_mem[2] != 0:
+    # 执行代码块
+    # 执行代码
+        for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):
+            my_debug_log
+            ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
+            my_debug_log(f"    PC: {curpc:#016x}")
+        my_debug_log(f"{user_data}:::buffer_mem: {buffer_mem}")
+
+
+def my_add_hooks(uc):
+    '''
+    Add hooks to the emulator.
+    '''
+    def dynamic_process_fc_hook(uc, address, size, user_data):
+        '''
+        hook dynamic process function. 
+        '''
+        buffer_mem = uc.mem_read(0x20000345,10)
+        if buffer_mem[2] != 0:
+            my_debug_log(f"address: {address:#x}")
+            my_debug_log(f"function name:{user_data}")
+            my_debug_log(f"dynamic process function: {size:#x}")
+    from unicorn import UC_HOOK_CODE
+    uc.hook_add(UC_HOOK_CODE, _hook_instruction, "poll",0x08000b82,0x08000c20)
+    uc.hook_add(UC_HOOK_CODE, _hook_instruction, "validateRequest",0x08000890,0x080008a6)
+    funcname_to_addr = {"process_FC1":0x080008c2,"process_FC3":0x08000978,"process_FC5":0x080009e0,"process_FC6":0x08000a2e,"process_FC15":0x08000a5a,"process_FC16":0x08000ae4}
+    for funcname, addr in funcname_to_addr.items():
+        uc.hook_add(UC_HOOK_CODE, dynamic_process_fc_hook, funcname, addr, addr+0x8)
+
 
 def _hook_irq_function(uc, address, size, user_data):
     '''
