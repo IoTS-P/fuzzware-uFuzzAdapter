@@ -5,64 +5,22 @@ from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 
 # 替换为你的CSV文件路径
-csv_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/PLC/fuzzware-project/stats/covered_bbs_by_second_into_experiment.csv'
-crash_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/PLC/fuzzware-project/stats/crash_creation_timings_tututututut.txt'
+csv_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Gateway/0224_fuzz/stats/covered_bbs_by_second_into_experiment.csv'
+
 # 读取CSV文件
 data = pd.read_csv(csv_file_path, delimiter='\t')
 
 # 将秒转换为timedelta，然后加上一个起始时间（例如1970年1月1日）
+# 这是必须的，因为matplotlib的日期格式化器需要一个日期时间对象
 start_time = datetime(1970, 1, 1)
 data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
 
-# 绘制基本块计数折线图
+# 绘制图表
 plt.figure(figsize=(10, 5))  # 设置图表大小
-plt.plot(data['time'], data['num_bbs_total'], marker='o', label='Basic Blocks')
-
-# 添加crash文件的路径
-
-
-# 读取crash文件，并获取崩溃发生的时间点
-with open(crash_file_path, 'r') as crash_data:
-    crash_times = [start_time + timedelta(seconds=int(line.split('\t')[0])) for line in crash_data]
-
-# 在图表上标记崩溃点
-# 在图表上标记崩溃点
-# 添加崩溃时间点的处理
-crash_data = pd.read_csv(
-    crash_file_path, 
-    sep='\t', 
-    header=None,
-    names=['second_into_experiment', 'details']
-)
-
-# 提取时间戳并转换成datetime
-crash_times = crash_data['second_into_experiment'].apply(lambda x: start_time + timedelta(seconds=int(x)))
-
-# 在图表上标记崩溃点
-for crash_time in crash_times:
-    # 临时转换crash_time为matplotlib理解的格式
-    temp_crash_time = mdates.date2num(crash_time)
-    
-    # 过滤出对应时间点的数据
-    filtered_data = data[data['time'].map(mdates.date2num) == temp_crash_time]
-    
-    # 如果找到匹配的时间点，则进行绘制
-    if not filtered_data.empty:
-        plt.plot(
-            crash_time, 
-            filtered_data['num_bbs_total'].iloc[0], 
-            'rX', # 使用大写X表示crash图标
-            markersize=10,
-            label='Crash'
-        )
-
-# 由于标记可能重复添加，我们需要处理图例中的重复项
-handles, labels = plt.gca().get_legend_handles_labels()
-by_label = dict(zip(labels, handles))
-plt.legend(by_label.values(), by_label.keys())
+plt.plot(data['time'], data['num_bbs_total'], marker='o')  # 绘制折线图，使用圆圈标记每个点
 
 # 设置图表标题和坐标轴标签
-plt.title('Basic Block Count and Crashes Over Time')
+plt.title('Basic Block Count Over Time')
 plt.xlabel('Time (HH:MM)')
 plt.ylabel('Number of Basic Blocks')
 
@@ -77,7 +35,7 @@ plt.gcf().autofmt_xdate()
 plt.grid(True)
 
 # 显示图例
-plt.legend(['Basic Blocks', 'Crashes'])
+plt.legend(['Basic Blocks'])
 
 # 获取CSV文件所在的目录
 csv_directory = os.path.dirname(csv_file_path)
