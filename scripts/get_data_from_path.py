@@ -10,13 +10,18 @@ def extract_coverage_data(log_path):
 def extract_crash_data(crash_path):
     with open(crash_path, 'r') as file:
         lines = file.readlines()
-    first_crash_time = lines[0].split("\t")[0]
+    if len(lines) == 0:
+        first_crash_time = 0
+    else:
+        first_crash_time = lines[0].split("\t")[0]
+    
     unique_crashes = len(lines)
     return first_crash_time, unique_crashes
 
 # Replace the paths with your actual file paths
-coverage_log_path = "/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Gateway/0224_fuzz/logs/pipeline.log"
-crash_log_path = "/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Gateway/0224_fuzz/stats/crash_creation_timings.txt"
+base_path = "/home/n0vic3/fuzzers/fuzzware-examples/P2IM_COPY/Steering_Control/0304_fuzz"
+coverage_log_path = base_path+"/logs/pipeline.log"
+crash_log_path = base_path+"/stats/crash_creation_timings.txt"
 
 coverage_percentage = extract_coverage_data(coverage_log_path)
 first_crash_time, unique_crashes = extract_crash_data(crash_log_path)

@@ -4,6 +4,15 @@ import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 
+# 替换为你的CSV文件所在目录
+
+Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Steering_Control/'
+Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Steering_Control/'
+graph_title = "fuzzware/Steering_Control"
+graph_save_directory = Adapter_base_path
+Baseline_path_list = [os.path.join(Baseline_base_path,"0216_fuzz"),os.path.join(Baseline_base_path,"0218_fuzz"),os.path.join(Baseline_base_path,"0219_fuzz"),os.path.join(Baseline_base_path,"0220_fuzz"),os.path.join(Baseline_base_path,"0224_fuzz") ]
+Adapter_path_list = [os.path.join(Adapter_base_path,"0301_fuzz"),os.path.join(Adapter_base_path,"0302_fuzz"),os.path.join(Adapter_base_path,"0303_fuzz"),os.path.join(Adapter_base_path,"0304_fuzz"),os.path.join(Adapter_base_path,"0305_fuzz")]
+
 def plot_data(csv_file_path, label, color):
     # 读取CSV文件
     data = pd.read_csv(csv_file_path, delimiter='\t')
@@ -13,28 +22,27 @@ def plot_data(csv_file_path, label, color):
     data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
 
     # 绘制图表
-    plt.plot(data['time'], data['num_bbs_total'], marker='o', color=color, label=label)
+    plt.plot(data['time'], data['num_bbs_total'], marker='o', color=color, label=label,linewidth=1, markersize=1)
 
 # 设置图表大小
 plt.figure(figsize=(10, 5))
 
-# 替换为你的CSV文件所在目录
-csv_directory = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Gateway/0224_fuzz/stats/'
 
 # 绘制Baseline组的数据
 for i in range(1, 6):
-    csv_file_path = os.path.join(csv_directory, f'{i}-Baseline.csv')
+    csv_file_path = os.path.join(Baseline_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
     plot_data(csv_file_path, f'{i}-Baseline', 'blue')
 
 # 绘制Adapter组的数据
 for i in range(1, 6):
-    csv_file_path = os.path.join(csv_directory, f'{i}-Adapter.csv')
+    csv_file_path = os.path.join(Adapter_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
     plot_data(csv_file_path, f'{i}-Adapter', 'red')
 
 # 设置图表标题和坐标轴标签
-plt.title('Basic Block Count Over Time')
+plt.title(graph_title)
 plt.xlabel('Time (HH:MM)')
 plt.ylabel('Number of Basic Blocks')
+
 
 # 设置x轴的时间格式
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
@@ -50,7 +58,7 @@ plt.grid(True)
 plt.legend()
 
 # 保存图表到CSV文件所在的目录
-plot_file_path = os.path.join(csv_directory, 'comparison_plot.png')
+plot_file_path = os.path.join(graph_save_directory, 'comparison_plot.png')
 plt.savefig(plot_file_path)
 print(f'Plot saved to {plot_file_path}')
 
