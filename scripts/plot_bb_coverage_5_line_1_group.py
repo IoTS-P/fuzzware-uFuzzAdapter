@@ -5,13 +5,12 @@ from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 
 # 替换为你的CSV文件所在目录
-
-Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/P2IM/Steering_Control/'
-Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Steering_Control/'
-graph_title = "fuzzware/Steering_Control"
+Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/Thermostat'
+Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/Thermostat'
+graph_title = "fuzzware/Thermostat"
 graph_save_directory = Adapter_base_path
-Baseline_path_list = [os.path.join(Baseline_base_path,"0216_fuzz"),os.path.join(Baseline_base_path,"0218_fuzz"),os.path.join(Baseline_base_path,"0219_fuzz"),os.path.join(Baseline_base_path,"0220_fuzz"),os.path.join(Baseline_base_path,"0224_fuzz") ]
-Adapter_path_list = [os.path.join(Adapter_base_path,"0301_fuzz"),os.path.join(Adapter_base_path,"0302_fuzz"),os.path.join(Adapter_base_path,"0303_fuzz"),os.path.join(Adapter_base_path,"0304_fuzz"),os.path.join(Adapter_base_path,"0305_fuzz")]
+Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0318_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0309_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
+Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0309_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
 
 def plot_data(csv_file_path, label, color):
     # 读取CSV文件
@@ -22,19 +21,19 @@ def plot_data(csv_file_path, label, color):
     data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
 
     # 绘制图表
-    plt.plot(data['time'], data['num_bbs_total'], marker='o', color=color, label=label,linewidth=1, markersize=1)
+    plt.plot(data['time'], data['num_bbs_total'], marker='o', color=color, label=label,linewidth=2, markersize=1)
 
 # 设置图表大小
 plt.figure(figsize=(10, 5))
 
 
 # 绘制Baseline组的数据
-for i in range(1, 6):
+for i in range(1,len(Baseline_path_list)+1):
     csv_file_path = os.path.join(Baseline_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
     plot_data(csv_file_path, f'{i}-Baseline', 'blue')
 
 # 绘制Adapter组的数据
-for i in range(1, 6):
+for i in range(1,len(Adapter_path_list)+1):
     csv_file_path = os.path.join(Adapter_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
     plot_data(csv_file_path, f'{i}-Adapter', 'red')
 
