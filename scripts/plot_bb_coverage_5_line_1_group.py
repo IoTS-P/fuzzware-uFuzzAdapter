@@ -3,6 +3,15 @@ import pandas as pd
 import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
+Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/uEmu.3Dprinter'
+Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/uEmu.3Dprinter'
+graph_title = "fuzzware/uEmu.3Dprinter"
+graph_save_directory = Adapter_base_path
+
+# Define the paths to the directories containing your 'covered_bbs_by_second_into_experiment.csv' files
+Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0317_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
+Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0310_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
+
 
 def collect_and_interpolate_data(paths):
     data_frames = []
@@ -36,15 +45,6 @@ def plot_median_and_range(data, color, label_prefix):
     plt.fill_between(data.index, min_values, max_values, color=color, alpha=0.3)
 
 # Replace with your actual directories
-Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/uEmu.3Dprinter'
-Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/uEmu.3Dprinter'
-graph_title = "fuzzware/uEmu.3Dprinter"
-graph_save_directory = Adapter_base_path
-
-# Define the paths to the directories containing your 'covered_bbs_by_second_into_experiment.csv' files
-Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0317_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
-Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0310_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
-
 
 # Collect and interpolate the data
 baseline_data = collect_and_interpolate_data(Baseline_path_list)
