@@ -4,62 +4,98 @@ import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 
-# 替换为你的CSV文件所在目录
-Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/Thermostat'
-Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/Thermostat'
-graph_title = "fuzzware/Thermostat"
+def collect_and_interpolate_data(paths):
+    data_frames = []
+    for path in paths:
+        csv_file_path = os.path.join(path, 'stats', 'covered_bbs_by_second_into_experiment.csv')
+        data = pd.read_csv(csv_file_path, delimiter='\t')
+        start_time = datetime(1970, 1, 1)
+        data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
+        data_frames.append(data.set_index('time'))
+
+    # Determine common time range across all experiments
+    unified_start = max(df.index.min() for df in data_frames)
+    unified_end = min(df.index.max() for df in data_frames)
+    unified_time = pd.date_range(start=unified_start, end=unified_end, freq='S')
+
+    # Interpolate data for the unified time range
+    interpolated_data_frames = []
+    for df in data_frames:
+        df = df.reindex(unified_time, method='nearest', tolerance='1s').interpolate('time')
+        interpolated_data_frames.append(df['num_bbs_total'])
+
+    # Combine all interpolated data frames
+    combined_data = pd.concat(interpolated_data_frames, axis=1)
+    return combined_data
+
+def plot_median_and_range(data, color, label_prefix):
+    median_values = data.median(axis=1)
+    min_values = data.min(axis=1)
+    max_values = data.max(axis=1)
+    plt.plot(data.index, median_values, label=f'{label_prefix} Median', color=color, linewidth=2)
+    plt.fill_between(data.index, min_values, max_values, color=color, alpha=0.3)
+
+# Replace with your actual directories
+Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/uEmu.3Dprinter'
+Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/uEmu.3Dprinter'
+graph_title = "fuzzware/uEmu.3Dprinter"
 graph_save_directory = Adapter_base_path
-Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0318_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0309_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
-Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0309_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
 
-def plot_data(csv_file_path, label, color):
-    # 读取CSV文件
-    data = pd.read_csv(csv_file_path, delimiter='\t')
+# Define the paths to the directories containing your 'covered_bbs_by_second_into_experiment.csv' files
+Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0317_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
+Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0310_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
 
-    # 将秒转换为timedelta，然后加上一个起始时间（例如1970年1月1日）
-    start_time = datetime(1970, 1, 1)
-    data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
 
-    # 绘制图表
-    plt.plot(data['time'], data['num_bbs_total'], marker='o', color=color, label=label,linewidth=2, markersize=1)
+# Collect and interpolate the data
+baseline_data = collect_and_interpolate_data(Baseline_path_list)
+adapter_data = collect_and_interpolate_data(Adapter_path_list)
 
-# 设置图表大小
+# Set up the plot
 plt.figure(figsize=(10, 5))
+# Format the x-axis to show time in HH:MM format
+plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=1))  # Change interval if you want more or fewer labels
 
+# Find the min and max times across your datasets
+min_time = min(baseline_data.index.min(), adapter_data.index.min())
+max_time = max(baseline_data.index.max(), adapter_data.index.max())
 
-# 绘制Baseline组的数据
-for i in range(1,len(Baseline_path_list)+1):
-    csv_file_path = os.path.join(Baseline_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
-    plot_data(csv_file_path, f'{i}-Baseline', 'blue')
+# Now adjust min_time and max_time to the nearest hour if you want or just set them to your desired start and end times
+start_time = min_time.replace(hour=0, minute=0, second=0, microsecond=0)
+end_time = max_time.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-# 绘制Adapter组的数据
-for i in range(1,len(Adapter_path_list)+1):
-    csv_file_path = os.path.join(Adapter_path_list[i-1], 'stats', 'covered_bbs_by_second_into_experiment.csv')
-    plot_data(csv_file_path, f'{i}-Adapter', 'red')
+# Set the x-axis limits
+plt.gca().set_xlim(start_time, end_time)
 
-# 设置图表标题和坐标轴标签
+# Rotate x-axis labels to make them easier to read
+plt.gcf().autofmt_xdate()
+
+# Plot the data for Baseline and Adapter groups
+plot_median_and_range(baseline_data, 'blue', 'Baseline')
+plot_median_and_range(adapter_data, 'red', 'Adapter')
+
+# Set the title and axis labels
 plt.title(graph_title)
 plt.xlabel('Time (HH:MM)')
 plt.ylabel('Number of Basic Blocks')
 
-
-# 设置x轴的时间格式
+# Format the x-axis to show time in HH:MM format
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 plt.gca().xaxis.set_major_locator(mdates.HourLocator())
 
-# 旋转x轴的日期标签以便更容易阅读
+# Rotate x-axis labels to make them easier to read
 plt.gcf().autofmt_xdate()
 
-# 显示网格
+# Display grid
 plt.grid(True)
 
-# 显示图例
+# Display legend
 plt.legend()
 
-# 保存图表到CSV文件所在的目录
+# Save the plot to the same directory as the data files
 plot_file_path = os.path.join(graph_save_directory, 'comparison_plot.png')
 plt.savefig(plot_file_path)
 print(f'Plot saved to {plot_file_path}')
 
-# 关闭图表窗口
+# Close the plot window to prevent it from displaying in an interactive session
 plt.close()
