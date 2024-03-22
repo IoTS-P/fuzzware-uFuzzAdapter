@@ -916,6 +916,7 @@ def do_genstats(args, leftover_args):
 
                 if pc is None:
                     logger.warning(f"An input does not reproduce a crash: {crashing_input}")
+                    crash_contexts.setdefault((-404, -404), []).append(crashing_input)
                     continue
 
                 crash_contexts.setdefault((pc, lr), []).append(crashing_input)
