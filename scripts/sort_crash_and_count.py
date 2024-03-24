@@ -1,9 +1,14 @@
 # The file seems to have a structure where each line contains information about a unique crash.
 # The structure is: <num_unique_crashes> pc lr <crash_path_1> <crash_path_2> ...
 # We will read the file and process the data accordingly.
-import os, json,random,subprocess
+import os, json,random,subprocess,re
 # 你提供的真实 crash 地址
-real_crash_list = ["80008c2", "8000a5a","8000ae4","8000978"]
+real_crash_list = ["3b0"]
+time_list = ["0308","0309","0311","0317","0318"]
+firmware_name = "Thermostat"
+group_name= "uEmu"
+fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
+home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
 # 用于存储真实 crash 地址的字典
 real_crash_addresses = {}
 for real_crash in real_crash_list:
@@ -15,6 +20,12 @@ def extract_basic_block_addresses(output):
         if line.startswith('Basic Block: addr='):
             addr = line.split(' ')[3]
             addresses.append(addr)
+            if firmware_name == "uEmu.GPSTracker":
+                # 使用正则表达式提取lr数字部分
+                match = re.search(r'0x(\w+)', line.split(' ')[-1])
+                if match:
+                    result = match.group(1)
+                    addresses.append(result)
     return addresses
 
 # 判断是否是真实的 crash
@@ -30,7 +41,7 @@ def is_real_crash(addresses):
 def get_control_flow_graph(original_file_path,crash_file_path):
     completed_crash_file_path = os.path.join(original_file_path,crash_file_path)
     config_file_path = os.path.join(original_file_path, "data")
-    command = f'/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware emu -M {completed_crash_file_path}'
+    command = f'{fuzzware_version} emu -M {completed_crash_file_path}'
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=config_file_path)
     output, _ = process.communicate()
     output = output.decode('utf-8')
@@ -68,10 +79,10 @@ def get_results(file_path):
             selected_paths = crash_paths
             TRUE_CRASH = False
             for one_selcet_path in selected_paths:
+                print(f"current firmware:{firmware_name} current time:{time}")
                 if not get_control_flow_graph(original_file_path,one_selcet_path):
-                    print(f"not real crash: {one_selcet_path}")
-                    print(f"pc: {pc}, lr: {lr}")
-                    break
+                    print(f"false crash: {one_selcet_path}")
+                    
                 else:
                     TRUE_CRASH = True
                     print(f"real crash: {one_selcet_path}")
@@ -95,15 +106,18 @@ def get_results(file_path):
         file.write(json.dumps(real_crash))
         file.write('\n')
         file.write(json.dumps(real_crash_addresses))
+    for real_crash in real_crash_list:
+        real_crash_addresses[real_crash] = 0
     print('Results written to:', wrtie_path)
     return crash_results
 
 if __name__ == '__main__':
     
-    time_list = ["0308", "0303", "0304", "0311"]
+    
     sum_results = {}
+    
     for time in time_list:
-        new_file_path = f'/home/n0vic3/fuzzers/fuzzware-examples/P2IM/PLC/{time}_fuzz'
+        new_file_path = f'{home_path}/{group_name}/{firmware_name}/{time}_fuzz'
         results = get_results(new_file_path)
         print(results)
         sum_results[time] = results
