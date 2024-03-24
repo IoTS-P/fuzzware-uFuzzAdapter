@@ -3,14 +3,16 @@ import pandas as pd
 import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
-Baseline_base_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/uEmu.3Dprinter'
-Adapter_base_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/uEmu.3Dprinter'
-graph_title = "fuzzware/uEmu.3Dprinter"
+firmware_name = 'PLC'
+group_name = 'P2IM'
+Baseline_base_path = f'/home/n0vic3/fuzzers/fuzzware/examples/{group_name}/{firmware_name}'
+Adapter_base_path = f'/home/n0vic3/fuzzers/fuzzware-examples/{group_name}/{firmware_name}'
+graph_title = f"fuzzware/{firmware_name}"
 graph_save_directory = Adapter_base_path
 
 # Define the paths to the directories containing your 'covered_bbs_by_second_into_experiment.csv' files
-Baseline_path_list = [os.path.join(Baseline_base_path,"0308_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz"),os.path.join(Baseline_base_path,"0310_fuzz"),os.path.join(Baseline_base_path,"0317_fuzz"),os.path.join(Baseline_base_path,"0311_fuzz")]
-Adapter_path_list = [os.path.join(Adapter_base_path,"0308_fuzz"),os.path.join(Adapter_base_path,"0310_fuzz"),os.path.join(Adapter_base_path,"0317_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0318_fuzz")]
+Baseline_path_list = [os.path.join(Baseline_base_path,"0216_fuzz"),os.path.join(Baseline_base_path,"0218_fuzz"),os.path.join(Baseline_base_path,"0219_fuzz"),os.path.join(Baseline_base_path,"0220_fuzz"),os.path.join(Baseline_base_path,"0224_fuzz")]
+Adapter_path_list = [os.path.join(Adapter_base_path,"0303_fuzz"),os.path.join(Adapter_base_path,"0304_fuzz"),os.path.join(Adapter_base_path,"0307_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0308_fuzz")]
 
 
 def collect_and_interpolate_data(paths):
