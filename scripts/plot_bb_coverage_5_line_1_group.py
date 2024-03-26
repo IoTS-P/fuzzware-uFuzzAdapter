@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
@@ -23,23 +24,23 @@ def collect_and_interpolate_data(paths):
         csv_file_path = os.path.join(path, 'stats', 'covered_bbs_by_second_into_experiment.csv')
         data = pd.read_csv(csv_file_path, delimiter='\t')
         start_time = datetime(1970, 1, 1)
-        data['time'] = data['# seconds_into_experiment'].apply(lambda x: start_time + timedelta(seconds=x))
-        data_frames.append(data.set_index('time'))
+        # 将秒转换为小时
+        data['hours'] = data['# seconds_into_experiment'] / 3600.0
+        data_frames.append(data.set_index('hours'))
 
     # Determine common time range across all experiments
     unified_start = max(df.index.min() for df in data_frames)
     unified_end = min(df.index.max() for df in data_frames)
-    unified_time = pd.date_range(start=unified_start, end=unified_end, freq='S')
+    unified_hours = np.arange(unified_start, unified_end + 1/3600, 1/3600)  # 每秒一个数据点
 
     # Interpolate data for the unified time range
     interpolated_data_frames = []
     for df in data_frames:
         if df.index.duplicated().any():
             df = df[~df.index.duplicated(keep='first')]
-        df = df.reindex(unified_time, method='nearest', tolerance='1s').interpolate('time')
+        df = df.reindex(unified_hours, method='nearest', tolerance=1/3600).interpolate('index')  # 使用index插值
         interpolated_data_frames.append(df['num_bbs_total'])
 
-    # Combine all interpolated data frames
     combined_data = pd.concat(interpolated_data_frames, axis=1)
     return combined_data
 
@@ -52,57 +53,43 @@ def plot_median_and_range(data, color, label_prefix):
 
 # Replace with your actual directories
 
-# Collect and interpolate the data
+# 收集和插值数据（假设已经修改为使用小时索引）
 baseline_data = collect_and_interpolate_data(Baseline_path_list)
 adapter_data = collect_and_interpolate_data(Adapter_path_list)
 
-# Set up the plot
+# 设置图表
 plt.figure(figsize=(10, 5))
-# Format the x-axis to show time in HH:MM format
-plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=10))  # Change interval if you want more or fewer labels
 
-# Find the min and max times across your datasets
-min_time = min(baseline_data.index.min(), adapter_data.index.min())
-max_time = max(baseline_data.index.max(), adapter_data.index.max())
+# 找到所有数据集中的最小和最大小时数
+min_hours = min(baseline_data.index.min(), adapter_data.index.min())
+max_hours = max(baseline_data.index.max(), adapter_data.index.max())
 
-# Now adjust min_time and max_time to the nearest hour if you want or just set them to your desired start and end times
-start_time = min_time.replace(hour=0, minute=0, second=0, microsecond=0)
-# end_time = max_time.replace(hour=23, minute=59, second=59, microsecond=999999)
-end_time = start_time + timedelta(days=1)
+# 设置x轴的限制，这里直接使用小时数
+plt.xlim(min_hours, max_hours)
 
-# Set the x-axis limits
-plt.gca().set_xlim(start_time, end_time)
+# 设置x轴的标签，确保它们以小时为单位显示
+hours_range = np.arange(min_hours, max_hours + 1, step=4)  # 每小时一个标签
+plt.xticks(hours_range, [f'{int(hour)}' for hour in hours_range])
 
-# Rotate x-axis labels to make them easier to read
-plt.gcf().autofmt_xdate()
-
-# Plot the data for Baseline and Adapter groups
+# 绘制基线和适配器组的数据
 plot_median_and_range(baseline_data, 'blue', 'Baseline')
 plot_median_and_range(adapter_data, 'red', 'Adapter')
 
-# Set the title and axis labels
+# 设置标题和轴标签
 plt.title(graph_title)
-plt.xlabel('Time (HH:MM)')
+plt.xlabel('Time (Hours)')
 plt.ylabel('Number of Basic Blocks')
 
-# Format the x-axis to show time in HH:MM format
-plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=4))
-
-# Rotate x-axis labels to make them easier to read
-plt.gcf().autofmt_xdate()
-
-# Display grid
+# 显示网格
 plt.grid(True)
 
-# Display legend
+# 显示图例
 plt.legend()
 
-# Save the plot to the same directory as the data files
-plot_file_path = os.path.join(graph_save_directory,  'compare.png')
+# 保存图表到指定目录
+plot_file_path = os.path.join(graph_save_directory, 'comparison_plot.png')
 plt.savefig(plot_file_path)
 print(f'Plot saved to {plot_file_path}')
 
-# Close the plot window to prevent it from displaying in an interactive session
+# 关闭图表窗口，防止在交互式会话中显示
 plt.close()
