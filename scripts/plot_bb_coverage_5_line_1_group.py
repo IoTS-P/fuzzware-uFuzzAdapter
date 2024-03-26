@@ -3,7 +3,8 @@ import pandas as pd
 import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
-firmware_name = 'PLC'
+from plot_bb_config import *
+firmware_name = 'Heat_Press'
 group_name = 'P2IM'
 Baseline_base_path = f'/home/n0vic3/fuzzers/fuzzware/examples/{group_name}/{firmware_name}'
 Adapter_base_path = f'/home/n0vic3/fuzzers/fuzzware-examples/{group_name}/{firmware_name}'
@@ -11,13 +12,14 @@ graph_title = f"fuzzware/{firmware_name}"
 graph_save_directory = Adapter_base_path
 
 # Define the paths to the directories containing your 'covered_bbs_by_second_into_experiment.csv' files
-Baseline_path_list = [os.path.join(Baseline_base_path,"0216_fuzz"),os.path.join(Baseline_base_path,"0218_fuzz"),os.path.join(Baseline_base_path,"0219_fuzz"),os.path.join(Baseline_base_path,"0220_fuzz"),os.path.join(Baseline_base_path,"0224_fuzz")]
-Adapter_path_list = [os.path.join(Adapter_base_path,"0303_fuzz"),os.path.join(Adapter_base_path,"0304_fuzz"),os.path.join(Adapter_base_path,"0307_fuzz"),os.path.join(Adapter_base_path,"0311_fuzz"),os.path.join(Adapter_base_path,"0308_fuzz")]
+Baseline_path_list = [os.path.join(Baseline_base_path, path) for path in baseline_folder[firmware_name]]
+Adapter_path_list = [os.path.join(Adapter_base_path, path) for path in adapter_folder[firmware_name]]
 
 
 def collect_and_interpolate_data(paths):
     data_frames = []
     for path in paths:
+        print(f'Collecting data from {path}')
         csv_file_path = os.path.join(path, 'stats', 'covered_bbs_by_second_into_experiment.csv')
         data = pd.read_csv(csv_file_path, delimiter='\t')
         start_time = datetime(1970, 1, 1)
@@ -32,6 +34,8 @@ def collect_and_interpolate_data(paths):
     # Interpolate data for the unified time range
     interpolated_data_frames = []
     for df in data_frames:
+        if df.index.duplicated().any():
+            df = df[~df.index.duplicated(keep='first')]
         df = df.reindex(unified_time, method='nearest', tolerance='1s').interpolate('time')
         interpolated_data_frames.append(df['num_bbs_total'])
 
@@ -56,7 +60,7 @@ adapter_data = collect_and_interpolate_data(Adapter_path_list)
 plt.figure(figsize=(10, 5))
 # Format the x-axis to show time in HH:MM format
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=1))  # Change interval if you want more or fewer labels
+plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=10))  # Change interval if you want more or fewer labels
 
 # Find the min and max times across your datasets
 min_time = min(baseline_data.index.min(), adapter_data.index.min())
@@ -64,7 +68,8 @@ max_time = max(baseline_data.index.max(), adapter_data.index.max())
 
 # Now adjust min_time and max_time to the nearest hour if you want or just set them to your desired start and end times
 start_time = min_time.replace(hour=0, minute=0, second=0, microsecond=0)
-end_time = max_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+# end_time = max_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+end_time = start_time + timedelta(days=1)
 
 # Set the x-axis limits
 plt.gca().set_xlim(start_time, end_time)
@@ -83,7 +88,7 @@ plt.ylabel('Number of Basic Blocks')
 
 # Format the x-axis to show time in HH:MM format
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-plt.gca().xaxis.set_major_locator(mdates.HourLocator())
+plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=4))
 
 # Rotate x-axis labels to make them easier to read
 plt.gcf().autofmt_xdate()
@@ -95,7 +100,7 @@ plt.grid(True)
 plt.legend()
 
 # Save the plot to the same directory as the data files
-plot_file_path = os.path.join(graph_save_directory, 'comparison_plot.png')
+plot_file_path = os.path.join(graph_save_directory,  'compare.png')
 plt.savefig(plot_file_path)
 print(f'Plot saved to {plot_file_path}')
 

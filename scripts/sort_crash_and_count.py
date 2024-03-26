@@ -3,10 +3,10 @@
 # We will read the file and process the data accordingly.
 import os, json,random,subprocess,re
 # 你提供的真实 crash 地址
-real_crash_list = ["3b0"]
-time_list = ["0308","0309","0311","0317","0318"]
-firmware_name = "Thermostat"
-group_name= "uEmu"
+real_crash_list = ["8040c"]
+time_list = ["0308"]
+firmware_name = "Heat_Press"
+group_name= "P2IM"
 fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
 home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
 # 用于存储真实 crash 地址的字典

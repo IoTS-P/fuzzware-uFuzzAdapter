@@ -19,7 +19,7 @@ def extract_crash_data(crash_path):
     return first_crash_time, unique_crashes
 
 # Replace the paths with your actual file paths
-base_path = "/home/n0vic3/fuzzers/fuzzware-examples/uEmu/RF_Door_Lock/0313_fuzz"
+base_path = "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/Heat_Press/0308_fuzz"
 coverage_log_path = base_path+"/logs/pipeline.log"
 crash_log_path = base_path+"/stats/crash_creation_timings.txt"
 
