@@ -65,6 +65,7 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
             case IRQ_FUZZ_MODE_FUZZ_ENABLED_IRQ_INDEX:
                 // Pend the irq which the fuzzer decides which irq to pend based on the currently enabled ones
                 num_enabled = get_num_enabled();
+                
                 if (num_enabled)
                 {
                     uint8_t irq_ind = 0; // default: we choose the first one without consuming fuzzing input if we only have one enabled irq anyways
@@ -91,6 +92,9 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
             case IRQ_FUZZ_MODE_ROUND_ROBIN:
                 if (get_num_enabled()) {
                     trigger->irq = nth_enabled_irq_num(trigger->round_robin_index++);
+                    if(trigger->irq == skip_interrupt){
+                        trigger->irq = 0;
+                    }
                     #ifdef DEBUG_INTERRUPT_TRIGGERS
                     printf("[INTERRUPT TRIGGER] Round robin: Pending nth (%d) interrupt: %d\n", trigger->round_robin_index, trigger->irq);
                     #endif

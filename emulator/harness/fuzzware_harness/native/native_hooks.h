@@ -18,6 +18,7 @@
 #define DEBUG_TIMER_TIMEOUT 100
 
 extern int do_print_exit_info;
+extern short skip_interrupt;
 extern uint32_t num_mmio_regions;
 extern uint64_t *mmio_region_starts;
 extern uint64_t *mmio_region_ends;

@@ -129,6 +129,7 @@ uint32_t global_partion = 0;
 uint32_t read_times = 0;
 uint32_t vtor_num = 0;
 uint32_t stop_count = 1;
+short skip_interrupt = 0;
 
 bool adapter_can_exit = false;
 // 定义哈希表的数据类型
@@ -1536,6 +1537,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
         (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
   }
   char buf[100];
+  skip_interrupt = dt->irq_num;
   sprintf(buf, "irq_num = %d\n", dt->irq_num);
   my_debug_log(buf);
 
