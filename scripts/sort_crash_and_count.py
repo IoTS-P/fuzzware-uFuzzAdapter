@@ -2,13 +2,16 @@
 # The structure is: <num_unique_crashes> pc lr <crash_path_1> <crash_path_2> ...
 # We will read the file and process the data accordingly.
 import os, json,random,subprocess,re
+from plot_bb_config import firmware_crashpc
 # 你提供的真实 crash 地址
-real_crash_list = ["8040c"]
-time_list = ["0308"]
-firmware_name = "Heat_Press"
-group_name= "P2IM"
-fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
-home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
+firmware_name = "CVE-2020-10066"
+real_crash_list = firmware_crashpc[firmware_name]
+time_list = ["0328","0330"]
+# _inter or _idle
+firmware_name += "_inter"
+group_name= "other_target_orig"
+fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
+home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
 # 用于存储真实 crash 地址的字典
 real_crash_addresses = {}
 for real_crash in real_crash_list:
@@ -40,7 +43,8 @@ def is_real_crash(addresses):
 
 def get_control_flow_graph(original_file_path,crash_file_path):
     completed_crash_file_path = os.path.join(original_file_path,crash_file_path)
-    config_file_path = os.path.join(original_file_path, "data")
+    mainxxx = crash_file_path.split('/')[0]
+    config_file_path = os.path.join(original_file_path, mainxxx)
     command = f'{fuzzware_version} emu -M {completed_crash_file_path}'
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=config_file_path)
     output, _ = process.communicate()

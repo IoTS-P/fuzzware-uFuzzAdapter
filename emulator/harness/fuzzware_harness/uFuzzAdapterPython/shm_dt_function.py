@@ -60,7 +60,7 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
             
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB
 cs = Cs(CS_ARCH_ARM, CS_MODE_MCLASS|CS_MODE_THUMB)
-from unicorn.arm_const import UC_ARM_REG_PC
+from unicorn.arm_const import UC_ARM_REG_PC,UC_ARM_REG_IPSR
 def _hook_instruction(uc, address, size, user_data):
     '''
     dump instruction disassembly and log. 
@@ -68,39 +68,23 @@ def _hook_instruction(uc, address, size, user_data):
     '''
     curpc = uc.reg_read(UC_ARM_REG_PC)
     mem = uc.mem_read(address, size)
-
-
-    
-    buffer_mem = uc.mem_read(0x20000345,10)
-    if buffer_mem[2] != 0:
+    ipsr = uc.reg_read(UC_ARM_REG_IPSR)
     # 执行代码块
     # 执行代码
-        for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):
-            my_debug_log
-            ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
-            my_debug_log(f"    PC: {curpc:#016x}")
-        my_debug_log(f"{user_data}:::buffer_mem: {buffer_mem}")
+    for (cs_address, cs_size, cs_mnemonic, cs_opstr) in cs.disasm_lite(bytes(mem), size):
+        my_debug_log
+        ("    Instr: {:#016x}:\t{}\t{}".format(address, cs_mnemonic, cs_opstr))
+    my_debug_log(f"function:{user_data} PC: {curpc:#016x} IPSR: {ipsr:#x}")
 
 
 def my_add_hooks(uc):
     '''
     Add hooks to the emulator.
     '''
-    def dynamic_process_fc_hook(uc, address, size, user_data):
-        '''
-        hook dynamic process function. 
-        '''
-        buffer_mem = uc.mem_read(0x20000345,10)
-        if buffer_mem[2] != 0:
-            my_debug_log(f"address: {address:#x}")
-            my_debug_log(f"function name:{user_data}")
-            my_debug_log(f"dynamic process function: {size:#x}")
     from unicorn import UC_HOOK_CODE
-    uc.hook_add(UC_HOOK_CODE, _hook_instruction, "poll",0x08000b82,0x08000c20)
-    uc.hook_add(UC_HOOK_CODE, _hook_instruction, "validateRequest",0x08000890,0x080008a6)
-    funcname_to_addr = {"process_FC1":0x080008c2,"process_FC3":0x08000978,"process_FC5":0x080009e0,"process_FC6":0x08000a2e,"process_FC15":0x08000a5a,"process_FC16":0x08000ae4}
-    for funcname, addr in funcname_to_addr.items():
-        uc.hook_add(UC_HOOK_CODE, dynamic_process_fc_hook, funcname, addr, addr+0x8)
+    uc.hook_add(UC_HOOK_CODE, _hook_instruction, "spi_stm32_isr",0x800a85c,0x800a87e)
+    # uc.hook_add(UC_HOOK_CODE, _hook_instruction, "uart_stm32_isr",0x800ab40,0x800ab48)
+
 
 
 def _hook_irq_function(uc, address, size, user_data):

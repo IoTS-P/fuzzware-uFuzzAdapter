@@ -963,6 +963,13 @@ static void nvic_exception_return_hook(uc_engine *uc, uint64_t address, uint32_t
     printf("############## Returned from interrupt. From: 0x%08lx to 0x%08x\n", address, pc); fflush(stdout);
     fflush(stdout);
     #endif
+    #ifdef MYDEBUG
+        uint32_t pc;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    char buf[100];
+    sprintf(buf, "Returned from interrupt. From: 0x%08lx to 0x%08x\n", address, pc);
+    my_debug_log(buf);
+    #endif 
 }
 
 static void handler_svc(uc_engine *uc, uint32_t intno, void *user_data) {
@@ -970,6 +977,13 @@ static void handler_svc(uc_engine *uc, uint32_t intno, void *user_data) {
     uint32_t pc;
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
     printf("[SVC HOOK %08x] native SVC hook called, intno: %d\n", pc, intno); fflush(stdout);
+    #endif
+    #ifdef MYDEBUG
+    uint32_t pc;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    char buf[100];
+    sprintf(buf, "[SVC HOOK %08x] native SVC hook called, intno: %d\n", pc, intno);
+    my_debug_log(buf);
     #endif
 
     // Make sure we are actually asked to perform a syscall
@@ -1073,6 +1087,11 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
     uint32_t ExceptionNumber = nvic.pending_irq;
     uint32_t isr_entry;
     uc_mem_read(uc, nvic.vtor + 4 * ExceptionNumber, &isr_entry, sizeof(isr_entry));
+    #ifdef MYDEBUG
+    char buf[100];
+    sprintf(buf, "Redirecting irq %d to isr: %08x\n", ExceptionNumber, isr_entry);
+    my_debug_log(buf);
+    #endif
     uc_reg_write(uc, UC_ARM_REG_PC, &isr_entry);
     #ifdef DEBUG_NVIC
     printf("Redirecting irq %d to isr: %08x\n", ExceptionNumber, isr_entry);
@@ -1098,6 +1117,9 @@ static void ExceptionEntry(uc_engine *uc, bool is_tail_chained, bool skip_instru
     #ifdef DEBUG_NVIC
     puts("************ POST ExceptionEntry");
     print_state(uc);
+    #endif
+    #ifdef MYDEBUG
+    // print_state_for_mydebug(uc);
     #endif
 }
 
@@ -1311,7 +1333,8 @@ uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t p_inte
     uc_hook_add(uc, &hook_mmio_write_handle, UC_HOOK_MEM_WRITE, hook_sysctl_mmio_write, NULL, SYSCTL_MMIO_BASE, SYSCTL_MMIO_END);
     uc_hook_add(uc, &hook_mmio_read_handle, UC_HOOK_MEM_READ, hook_sysctl_mmio_read, NULL, SYSCTL_MMIO_BASE, SYSCTL_MMIO_END);
 
-    uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL, 1, 0);
+    // uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL, 1, 0);
+    uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL,0,0xffffffff);
 
     subscribe_state_snapshotting(uc, nvic_take_snapshot, nvic_restore_snapshot, nvic_discard_snapshot);
 

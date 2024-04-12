@@ -4,7 +4,7 @@ import os
 import sys
 import logging
 
-from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK,UC_HOOK_CODE)
+from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK,UC_HOOK_CODE,UC_HOOK_INTR)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
 
 from . import interrupt_triggers, native, timer, user_hooks,globs
@@ -264,10 +264,12 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks,_hook_instruction,_hook_irq_function
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
     # my_add_hooks(uc)
+    # uc.hook_add(UC_HOOK_BLOCK, _hook_instruction)
+    # uc.hook_add(UC_HOOK_INTR, _hook_irq_function)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
     # MMIO modeling and listener setup
