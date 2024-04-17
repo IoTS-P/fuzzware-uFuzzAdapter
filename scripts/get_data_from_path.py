@@ -21,12 +21,13 @@ def extract_crash_data(crash_path):
     return first_crash_time, unique_crashes
 
 # Replace the paths with your actual file paths
-base_path = "/home/n0vic3/fuzzers/fuzzware/examples/other_target_orig/3319-30/fuzzware-project"
+base_path = "/home/n0vic3/fuzzers/fuzzware-examples/other_target/3319-30/0412_fuzz"
 coverage_log_path = base_path+"/logs/pipeline.log"
 crash_log_path = base_path+"/stats/crash_creation_timings.txt"
 
 coverage_percentage,basic_blocks = extract_coverage_data(coverage_log_path)
 first_crash_time, unique_crashes = extract_crash_data(crash_log_path)
+print(f"base_path: {base_path}")
 print(f"Basic blocks: {basic_blocks}")
 print(f"Coverage percentage: {coverage_percentage}%")
 print(f"First crash time: {first_crash_time}")

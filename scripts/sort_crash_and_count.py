@@ -4,14 +4,17 @@
 import os, json,random,subprocess,re
 from plot_bb_config import firmware_crashpc
 # 你提供的真实 crash 地址
-firmware_name = "CVE-2020-10066"
+firmware_name = "3319-30"
 real_crash_list = firmware_crashpc[firmware_name]
-time_list = ["0328","0330"]
+time_list = ["0412"]
 # _inter or _idle
-firmware_name += "_inter"
-group_name= "other_target_orig"
-fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
-home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
+firmware_name += ""
+group_name= "other_target"
+fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
+if "adapter" in fuzzware_version:
+    home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
+else:
+    home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
 # 用于存储真实 crash 地址的字典
 real_crash_addresses = {}
 for real_crash in real_crash_list:
@@ -29,6 +32,12 @@ def extract_basic_block_addresses(output):
                 if match:
                     result = match.group(1)
                     addresses.append(result)
+        elif 'pc' in line:
+            # 查找包含 'pc' 的行，并从中提取 'pc' 后的地址
+            pc_addr = re.search(r'\(pc (0x[0-9a-f]+)\)', line)
+            if pc_addr:
+                addresses.append(pc_addr.group(1))
+        
     return addresses
 
 # 判断是否是真实的 crash
@@ -45,7 +54,7 @@ def get_control_flow_graph(original_file_path,crash_file_path):
     completed_crash_file_path = os.path.join(original_file_path,crash_file_path)
     mainxxx = crash_file_path.split('/')[0]
     config_file_path = os.path.join(original_file_path, mainxxx)
-    command = f'{fuzzware_version} emu -M {completed_crash_file_path}'
+    command = f'{fuzzware_version} emu -M -v -t {completed_crash_file_path}'
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=config_file_path)
     output, _ = process.communicate()
     output = output.decode('utf-8')

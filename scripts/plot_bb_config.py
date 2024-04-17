@@ -24,7 +24,7 @@ adapter_folder ={
     "PLC": ["0303_fuzz","0304_fuzz","0307_fuzz","0308_fuzz","0311_fuzz"],
     "Reflow_Oven": ["0301_fuzz","0302_fuzz","0303_fuzz","0304_fuzz","0305_fuzz"],
     "Robot": ["0301_fuzz","0308_fuzz","0303_fuzz","0311_fuzz","0305_fuzz"],
-    "Soldering_Iron": ["0301_fuzz","0302_fuzz","0303_fuzz","0304_fuzz","0305_fuzz"],
+    "Soldering_Iron": ["0416_fuzz"],
     "Steering_Control": ["0301_fuzz","0307_fuzz","0303_fuzz","0309_fuzz","0305_fuzz"],
     "XML_Parser": ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
     "uEmu.GPSTracker" : ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
@@ -34,11 +34,13 @@ adapter_folder ={
 }
 
 firmware_crashpc = {"CVE-2021-3329":["af74"],
-                    "CVE-2021-3319":["40d380"],
+                    "CVE-2021-3319":["40d37c"],
                     "CVE-2021-3320":["403a70"],
-                    "CVE-2020-10064":["40dfc6"],
+                    "CVE-2020-10064":["40e008"],
                     "CVE-2020-10065":["8001372"],
                     "CVE-2020-10066":["8002cde"],
                     "CVE-2020-12141":["2088b4"],
                     "CVE-2020-12140":["205c4c"],
+                    "Soldering_Iron":["8002f28"],
+                    "3319-30":["40d37c","403a70","af74"]
                     }

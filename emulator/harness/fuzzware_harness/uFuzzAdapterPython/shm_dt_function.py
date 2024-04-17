@@ -93,3 +93,8 @@ def _hook_irq_function(uc, address, size, user_data):
     '''
     my_debug_log(f"irq function: {address:#x}")
     my_debug_log(f"irq function: {size:#x}")
+    
+def hook_fuzzware_bugs(uc, address, size, user_data):
+    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
+    cve3319.on_CVE_2021_3319(uc)
+    

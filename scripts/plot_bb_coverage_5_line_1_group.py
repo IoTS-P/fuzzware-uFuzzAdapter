@@ -5,7 +5,7 @@ import os
 from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 from plot_bb_config import *
-firmware_name = 'Heat_Press'
+firmware_name = 'Soldering_Iron'
 group_name = 'P2IM'
 Baseline_base_path = f'/home/n0vic3/fuzzers/fuzzware/examples/{group_name}/{firmware_name}'
 Adapter_base_path = f'/home/n0vic3/fuzzers/fuzzware-examples/{group_name}/{firmware_name}'

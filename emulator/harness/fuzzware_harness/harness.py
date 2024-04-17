@@ -264,12 +264,12 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks,_hook_instruction,_hook_irq_function
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks,_hook_instruction,_hook_irq_function,hook_fuzzware_bugs
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
+    uc.hook_add(UC_HOOK_BLOCK, hook_fuzzware_bugs)
     # my_add_hooks(uc)
     # uc.hook_add(UC_HOOK_BLOCK, _hook_instruction)
-    # uc.hook_add(UC_HOOK_INTR, _hook_irq_function)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
     # MMIO modeling and listener setup

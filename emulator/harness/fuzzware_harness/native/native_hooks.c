@@ -1536,17 +1536,20 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     dt->irq_num =
         (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
   }
+  #ifdef MYDEBUG
   char buf[100];
   skip_interrupt = dt->irq_num;
   sprintf(buf, "irq_num = %d\n", dt->irq_num);
   my_debug_log(buf);
-
+  #endif
   if (!dt->interrupt_times) {
     dt->interrupt_times = get_current_partition(dt);
+    printf("after getinterrupt_times = %d\n", dt->interrupt_times);
     return UC_ERR_OK;
   }
   nvic_set_pending(uc, dt->irq_num, false);
   dt->interrupt_times--;
+  printf("interrupt_times = %d\n", dt->interrupt_times);
   // if (read_times == global_partion  && global_partion != 0) {
   //   printf("[Adapter]: Hit enough times %d\n", read_times);
   //   read_times = 0;
@@ -1598,6 +1601,9 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 
 int get_current_partition(DataTracker *dt) {
   // Generate the latest random partition
+  if(dt->buffer_len == dt->buffer_min_len){
+    return dt->buffer_len;
+  }
   random_split_data_input(dt);
   int partition = 0;
   if (random_split_size == 1) {
