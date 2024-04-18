@@ -1,5 +1,6 @@
 import os,pickle,ctypes,json
 from ..util import my_debug_log
+from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 def read_from_shm_json(config,c_lib,vtor):
     '''
     used to read data from shared memory
@@ -81,7 +82,7 @@ def my_add_hooks(uc):
     '''
     Add hooks to the emulator.
     '''
-    from unicorn import UC_HOOK_CODE
+    
     uc.hook_add(UC_HOOK_CODE, _hook_instruction, "spi_stm32_isr",0x800a85c,0x800a87e)
     # uc.hook_add(UC_HOOK_CODE, _hook_instruction, "uart_stm32_isr",0x800ab40,0x800ab48)
 
@@ -94,7 +95,46 @@ def _hook_irq_function(uc, address, size, user_data):
     my_debug_log(f"irq function: {address:#x}")
     my_debug_log(f"irq function: {size:#x}")
     
-def hook_fuzzware_bugs(uc, address, size, user_data):
-    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
-    cve3319.on_CVE_2021_3319(uc)
+def hook_fuzzware_bugs(uc):
+    # from .fuzzware_hook_folder import cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
+    main_3319(uc)
+
+def on_basic_block(uc,callback,addr):
+    if addr == 0:
+        uc.hook_add(UC_HOOK_BLOCK, callback)
+    else:
+        uc.hook_add(UC_HOOK_BLOCK, callback, addr,addr)
+
+def main_3319(uc):
+    from .fuzzware_hook_folder import cve3319
+    on_basic_block(uc,cve3319.call_on_CVE_2021_3319,0)
     
+
+def main_3320(uc):
+    from .fuzzware_hook_folder import cve3320
+    on_basic_block(uc,cve3320.call_on_CVE_2021_3320,uc.symbols['ieee802154_recv'] + 0x42)
+
+def main_3321(uc):
+    from .fuzzware_hook_folder import cve3321
+    on_basic_block(uc,cve3321.call_on_CVE_2021_3321,uc.symbols['memmove'])
+
+def main_3322(uc):
+    from .fuzzware_hook_folder import cve3322
+    on_basic_block(uc,cve3322.call_on_CVE_2021_3322,uc.symbols['net_6lo_uncompress'])
+
+def main_3323(uc):
+    from .fuzzware_hook_folder import cve3323
+    on_basic_block(uc,cve3323.call_on_CVE_2021_3323,uc.symbols['net_6lo_uncompress'] + 0x3e)
+    on_basic_block(uc,cve3323.call_on_CVE_2021_3323,uc.symbols['net_6lo_uncompress'] + 0x46)
+
+def main_3329(uc):
+    from .fuzzware_hook_folder import cve3329
+    on_basic_block(uc,cve3329.on_semaphore_init,uc.symbols['z_impl_k_sem_init'])
+    on_basic_block(uc,cve3329.on_bt_init, uc.symbols['bt_init'] + 0x1e0)
+    on_basic_block(uc, cve3329.on_CVE_2021_3329, uc.symbols['send_frag'])
+    on_basic_block(uc, cve3329.on_z_impl_k_sem_take, uc.symbols['z_impl_k_sem_take'])
+    on_basic_block(uc, cve3329.on_timeout_callback, uc.symbols['z_clock_announce'] + 0x84)
+    on_basic_block(uc, cve3329.on_tx_free, uc.symbols['tx_free'])
+    on_basic_block(uc, cve3329.on_net_buf_simple_push, uc.symbols['net_buf_simple_push'])
+    on_basic_block(uc, cve3329.on_z_add_timeout, uc.symbols['z_add_timeout'])
+    on_basic_block(uc, cve3329.on_k_delayed_work_init, uc.symbols['k_delayed_work_init'])

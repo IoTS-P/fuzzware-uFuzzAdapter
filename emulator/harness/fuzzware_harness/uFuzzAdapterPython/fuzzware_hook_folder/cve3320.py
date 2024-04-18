@@ -20,3 +20,6 @@ def on_CVE_2021_3320 (uc):
     # Check for unexpected frame type
     if globs.uc.regs.r3 == IEEE802154_FRAME_TYPE_ACK:
         add_bug("CVE-2021-3320")
+
+def call_on_CVE_2021_3320(uc,address, size, user_data):
+    on_CVE_2021_3320(uc)

@@ -4,69 +4,46 @@
 import os, json,random,subprocess,re
 from plot_bb_config import firmware_crashpc
 # 你提供的真实 crash 地址
-firmware_name = "3319-30"
+firmware_name = "CVE-2021-3319"
 real_crash_list = firmware_crashpc[firmware_name]
-time_list = ["0412"]
+#"0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413"
+time_list = ["0405","0406","0409","0412"]
+#/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 firmware_name += ""
 group_name= "other_target"
-fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
-if "adapter" in fuzzware_version:
+ADAPTER = True
+if ADAPTER:
+    fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
 else:
+    fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
 # 用于存储真实 crash 地址的字典
 real_crash_addresses = {}
 for real_crash in real_crash_list:
     real_crash_addresses[real_crash] = 0
 # 提取 Basic Block 的 addr
-def extract_basic_block_addresses(output):
-    addresses = []
-    for line in output.split('\n'):
-        
-        if line.startswith('Basic Block: addr='):
-            addr = line.split(' ')[3]
-            addresses.append(addr)
-            if firmware_name == "uEmu.GPSTracker":
-                # 使用正则表达式提取lr数字部分
-                match = re.search(r'0x(\w+)', line.split(' ')[-1])
-                if match:
-                    result = match.group(1)
-                    addresses.append(result)
-        elif 'pc' in line:
-            # 查找包含 'pc' 的行，并从中提取 'pc' 后的地址
-            pc_addr = re.search(r'\(pc (0x[0-9a-f]+)\)', line)
-            if pc_addr:
-                addresses.append(pc_addr.group(1))
-        
-    return addresses
 
 # 判断是否是真实的 crash
-def is_real_crash(addresses):
-    for addr in addresses:
-        for real_crash_addr in real_crash_addresses.keys():
-            if real_crash_addr in addr:
-                real_crash_addresses[real_crash_addr] += 1
-                print(f"real crash addr: {real_crash_addr}")
-                return True
-    return False
+def is_real_crash(output):
+    # return "Heureka" in output
+    for line in output.split('\n'):
+        if "Heureka" in line:
+            return True, line.split(' ')[-1]
+    return False, None
 
 def get_control_flow_graph(original_file_path,crash_file_path):
     completed_crash_file_path = os.path.join(original_file_path,crash_file_path)
     mainxxx = crash_file_path.split('/')[0]
     config_file_path = os.path.join(original_file_path, mainxxx)
-    command = f'{fuzzware_version} emu -M -v -t {completed_crash_file_path}'
+    command = f'{fuzzware_version} emu {completed_crash_file_path}'
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=config_file_path)
     output, _ = process.communicate()
     output = output.decode('utf-8')
-
-    # 提取 Basic Block 的 addr
-    addresses = extract_basic_block_addresses(output)
-
+    # print(output)
     # 判断是否是真实的 crash
-    if is_real_crash(addresses):
-        return True
-    return False
+    return is_real_crash(output)
 
 def get_results(file_path):
     # Get the path to the file
@@ -75,6 +52,8 @@ def get_results(file_path):
     # Initialize a dictionary to store the results
     crash_results = {}
     real_crash = []
+    false_crash = []
+    i = 0
     with open(file_path, 'r') as file:
         for line in file.readlines()[1:]:
             # Split the line into components
@@ -92,38 +71,39 @@ def get_results(file_path):
             #     selected_paths = crash_paths
             selected_paths = crash_paths
             TRUE_CRASH = False
+            
             for one_selcet_path in selected_paths:
-                print(f"current firmware:{firmware_name} current time:{time}")
-                if not get_control_flow_graph(original_file_path,one_selcet_path):
+                i += 1
+                print(f"current firmware:{firmware_name} current time:{time} crash:{i}")
+                result,group = get_control_flow_graph(original_file_path,one_selcet_path)
+                if not result:
                     print(f"false crash: {one_selcet_path}")
-                    
+                    false_crash.append(one_selcet_path)
                 else:
                     TRUE_CRASH = True
                     print(f"real crash: {one_selcet_path}")
                     real_crash.append(one_selcet_path)
+                    crash_results[group] = crash_results.get(group, 0) + 1
             # Store the results in the dictionary
                     # Update the dictionary with the information
-            if TRUE_CRASH:
-                if lr not in crash_results:
-                    crash_results[lr] = {'total': 0, 'pcs': {}}
-                
-                for _ in crash_paths:
-                    crash_results[lr]['total'] += 1
-                    if pc not in crash_results[lr]['pcs']:
-                        crash_results[lr]['pcs'][pc] = 0
-                    crash_results[lr]['pcs'][pc] += 1
+            
         
 
     wrtie_path = file_path.replace('crash_contexts.txt', 'true_crash.txt')
     with open(wrtie_path, 'w') as file:
-        
+        file.write(f"num of crashes:{len(real_crash)}\n")
         file.write(json.dumps(real_crash))
         file.write('\n')
+        file.write(f"num of false crashes:{len(false_crash)}\n")
+        file.write(json.dumps(false_crash))
+        file.write('\n')
         file.write(json.dumps(real_crash_addresses))
+        file.write('\n')
+        file.write(json.dumps(crash_results))
     for real_crash in real_crash_list:
         real_crash_addresses[real_crash] = 0
     print('Results written to:', wrtie_path)
-    return crash_results
+    
 
 if __name__ == '__main__':
     

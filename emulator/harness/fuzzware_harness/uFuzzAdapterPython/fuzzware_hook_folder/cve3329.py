@@ -247,6 +247,8 @@ def on_isr_exit (uc):
     global isr_state
     isr_state.depth -= 1
 
+
+# CVE-2023-1423
 def on_net_buf_alloc_len_ret_check_nullptr_in_isr (uc):
     global isr_state
     # Check whether NULL is returned from blocking netbuf allocation when within an ISR
@@ -342,6 +344,9 @@ def on_bt_hci_cmd_send_sync_set_invalid (uc):
     if net_buf_id == 0 or net_buf_id == 1:
         send_sync_sema_states[net_buf_id].valid = False
 
+
+
+# CVE-2023-1901
 def on_bt_hci_cmd_done_check_sema_validity (uc):
     global send_sync_sema_states
     # Check whether sync sema on command buffer is valid in case it is about to be used
@@ -456,6 +461,7 @@ def on_le_init_check_2 (uc):
     if acl_max_num == 0:
         le_init.invalid_init = True
 
+# CVE-2023-0397 
 def on_le_init_sem_take (uc):
     global le_init
     # PORTING: &_data_ram_start.le.pkts == 0x20002F7C

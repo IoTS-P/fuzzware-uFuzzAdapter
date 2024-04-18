@@ -40,9 +40,11 @@ def on_CVE_2021_3319 (uc):
     if pc == 0x0040d318:
         # Reset tracking of whether we have a pointer when entering ieee802154_validate_frame
         mhr_src_addr.ptr = False
+        print("Resetting mhr_src_addr.ptr to False", flush=True)
     elif pc == 0x0040d390:
         # We are in the "is a pointer" path
         mhr_src_addr.ptr = True
+        print("Setting mhr_src_addr.ptr to True", flush=True)
     elif pc == 0x0040d420:
         # Source address pointer assignment path triggered
         if mhr_src_addr.ptr:
@@ -50,3 +52,6 @@ def on_CVE_2021_3319 (uc):
     elif pc == 0x0040d41c:
         # Destination address (NULL assignment only reached in buggy case)
         add_bug("CVE-2021-3319")
+
+def call_on_CVE_2021_3319(uc,address, size, user_data):
+    on_CVE_2021_3319(uc)
