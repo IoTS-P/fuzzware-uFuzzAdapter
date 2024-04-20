@@ -96,8 +96,15 @@ def _hook_irq_function(uc, address, size, user_data):
     my_debug_log(f"irq function: {size:#x}")
     
 def hook_fuzzware_bugs(uc):
-    # from .fuzzware_hook_folder import cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
-    main_3319(uc)
+    #cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
+    # from .fuzzware_hook_folder import cve10065
+    # on_basic_block(uc,cve10065.call_on_CVE_2020_10065,0)
+    from .fuzzware_hook_folder import cve3329
+    # on_basic_block(uc,cve3329.call_on_CVE_2021_3329,0)
+    pass
+    # on_basic_block(uc,cve3319.call_on_CVE_2021_3319,0)
+
+    # main_10066(uc)
 
 def on_basic_block(uc,callback,addr):
     if addr == 0:
@@ -105,9 +112,7 @@ def on_basic_block(uc,callback,addr):
     else:
         uc.hook_add(UC_HOOK_BLOCK, callback, addr,addr)
 
-def main_3319(uc):
-    from .fuzzware_hook_folder import cve3319
-    on_basic_block(uc,cve3319.call_on_CVE_2021_3319,0)
+    
     
 
 def main_3320(uc):
@@ -138,3 +143,8 @@ def main_3329(uc):
     on_basic_block(uc, cve3329.on_net_buf_simple_push, uc.symbols['net_buf_simple_push'])
     on_basic_block(uc, cve3329.on_z_add_timeout, uc.symbols['z_add_timeout'])
     on_basic_block(uc, cve3329.on_k_delayed_work_init, uc.symbols['k_delayed_work_init'])
+
+def main_10066(uc):
+    from .fuzzware_hook_folder import cve10066
+    on_basic_block(uc,cve10066.call_on_CVE_2020_10066,0)
+

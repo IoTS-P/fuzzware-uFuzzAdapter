@@ -21,7 +21,7 @@ def extract_crash_data(crash_path):
     return first_crash_time, unique_crashes
 
 # Replace the paths with your actual file paths
-base_path = "/home/n0vic3/fuzzers/fuzzware/examples/other_target_orig/CVE-2021-3323_inter/0412_fuzz"
+base_path = "/home/n0vic3/fuzzers/fuzzware-examples/ssd/CVEpahomqtt/fuzzware-project"
 coverage_log_path = base_path+"/logs/pipeline.log"
 crash_log_path = base_path+"/stats/crash_creation_timings.txt"
 

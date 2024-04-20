@@ -273,10 +273,12 @@ def workload_bugs_triggered_by_input(crash_path, bug_detection_hook_cfg):
     try:
         # Set pythonpath env var to parent of the project directory so that bug detection hooks are accessible
         HOOK_APPLICATION_ENV["PYTHONPATH"] = target_dir_path
-        output = subprocess.check_output(["fuzzware", "emu", "-c", bug_detection_config_path, crash_path], env=HOOK_APPLICATION_ENV)
-
+        workdir = os.path.dirname(bug_detection_config_path)
+        
+        output = subprocess.check_output(["fuzzware", "emu", "-c", bug_detection_config_path, crash_path], env=HOOK_APPLICATION_ENV,cwd=workdir)
+        
         output = output.decode()
-        # print(output, flush=True)
+        print(f"Output: {output}")
         # Collect all detected bugs via the stdout output
         return list(set(BUG_DETECTION_REGEX.findall(output)))
     except subprocess.CalledProcessError:

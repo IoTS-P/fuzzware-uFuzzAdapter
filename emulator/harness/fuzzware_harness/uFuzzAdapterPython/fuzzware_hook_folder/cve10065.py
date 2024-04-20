@@ -33,3 +33,7 @@ def on_CVE_2020_10065 (uc):
             add_bug("CVE-2020-10065")
         else:
             add_bug("GENERIC-len-overflow")
+
+def call_on_CVE_2020_10065(uc, address, size, user_data):
+    if uc.regs.pc == uc.symbols['net_buf_simple_add_mem']:
+        on_CVE_2020_10065(uc)

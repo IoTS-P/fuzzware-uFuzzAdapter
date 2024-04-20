@@ -17,3 +17,7 @@ def on_CVE_2020_10066 (uc):
     # Check for NULL netbuf pointer being passed to hci_cmd_done
     if globs.uc.regs.r1 == 0:
         add_bug("CVE-2020-10066")
+
+def call_on_CVE_2020_10066(uc, address, size, user_data):
+    if uc.regs.pc == uc.symbols['hci_cmd_done.isra.0']:
+        on_CVE_2020_10066(uc)

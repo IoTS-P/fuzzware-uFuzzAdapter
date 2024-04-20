@@ -247,8 +247,6 @@ def on_isr_exit (uc):
     global isr_state
     isr_state.depth -= 1
 
-
-# CVE-2023-1423
 def on_net_buf_alloc_len_ret_check_nullptr_in_isr (uc):
     global isr_state
     # Check whether NULL is returned from blocking netbuf allocation when within an ISR
@@ -344,9 +342,6 @@ def on_bt_hci_cmd_send_sync_set_invalid (uc):
     if net_buf_id == 0 or net_buf_id == 1:
         send_sync_sema_states[net_buf_id].valid = False
 
-
-
-# CVE-2023-1901
 def on_bt_hci_cmd_done_check_sema_validity (uc):
     global send_sync_sema_states
     # Check whether sync sema on command buffer is valid in case it is about to be used
@@ -461,7 +456,6 @@ def on_le_init_check_2 (uc):
     if acl_max_num == 0:
         le_init.invalid_init = True
 
-# CVE-2023-0397 
 def on_le_init_sem_take (uc):
     global le_init
     # PORTING: &_data_ram_start.le.pkts == 0x20002F7C
@@ -679,3 +673,83 @@ def on_net_buf_simple_push (uc):
     if net_buf_simple_headroom(buf) < len:
         lr = globs.uc.regs.lr
         add_bug("GENERIC-net_buf_simple_push-underflow-{:08x}".format( lr))
+
+def call_on_CVE_2021_3329(uc):
+    pc = uc.regs.pc
+    if pc == uc.symbols['z_impl_k_sem_init']:
+        on_semaphore_init(uc)
+    elif pc == uc.symbols['z_impl_k_sem_take']:
+        on_z_impl_k_sem_take(uc)
+    elif pc == uc.symbols["z_arm_int_exit"]:
+        on_isr_exit(uc)
+    elif pc == uc.symbols["_isr_wrapper"]:
+        on_isr_entry(uc)
+    elif pc == uc.symbols['net_buf_alloc_len']+0xe6:
+        on_net_buf_alloc_len_ret_check_nullptr_in_isr(uc)
+    elif pc == uc.symbols['bt_init']+0x1e0:
+        on_bt_init(uc)
+    elif pc == uc.symbols['z_clock_announce']+0x84:
+        on_timeout_callback(uc)
+    elif pc == uc.symbols['send_frag']:
+        on_CVE_2021_3329(uc)
+    elif pc == uc.symbols['z_impl_k_sem_take']:
+        on_z_impl_k_sem_take(uc)
+    elif pc == uc.symbols['net_buf_simple_push']:
+        on_net_buf_simple_push(uc)
+    elif pc == uc.symbols['tx_free']:
+        on_tx_free(uc)
+    elif pc == uc.symbols['z_add_timeout']:
+        on_z_add_timeout(uc)
+    elif pc == uc.symbols['k_delayed_work_init']:
+        on_k_delayed_work_init(uc)
+    elif pc == uc.symbols['bt_buf_get_cmd_complete']+0x36:
+        on_bt_buf_get_cmd_complete_sent_cmd_reuse(uc)
+    elif pc == uc.symbols['net_buf_put']:
+        on_net_buf_put_check_rx_tx_fifo_state(uc)
+    elif pc == uc.symbols['bt_hci_cmd_send_sync']+0x24:
+        on_bt_hci_cmd_send_sync_set_valid(uc)
+    elif pc == uc.symbols['bt_hci_cmd_send_sync']+0x78:
+        on_bt_hci_cmd_send_sync_set_invalid(uc)
+    elif pc == uc.symbols['hci_cmd_done.isra.0']+0x62:
+        on_bt_hci_cmd_done_check_sema_validity(uc)
+    elif pc == uc.symbols['set_le_adv_enable_legacy.constprop.0']+0x30:
+        on_set_le_adv_enable_legacy_send_sync(uc)
+    elif pc == uc.symbols['hci_cmd_done.isra.0']+0x32:
+        on_hci_cmd_done_state_update(uc)
+    elif pc == uc.symbols['arch_swap']:
+        on_arch_swap_enter(uc)
+    elif pc == uc.symbols['z_arm_pendsv']:
+        on_z_arm_pendsv(uc)
+    elif pc == uc.symbols['arch_swap']+0x20:
+        on_arch_swap_after_pendsv(uc)
+    elif pc == uc.symbols['z_impl_k_queue_get']+0xa4:
+        on_k_queue_get_poll(uc)
+    elif pc == uc.symbols['bt_att_sent']+0x18:
+        on_bt_att_sent(uc)
+    elif pc == uc.symbols['bt_att_recv']+0x72:
+        on_bt_att_recv(uc)
+    elif pc == uc.symbols['bt_att_recv']+0x74:
+        on_bt_att_recv(uc)
+    elif pc == uc.symbols['bt_att_recv']+0xaa:
+        on_bt_att_recv(uc)
+    elif pc == uc.symbols['bt_att_status']+0x18:
+        on_bt_att_status(uc)
+    elif pc == uc.symbols['conn_auto_initiate']+0x106:
+        on_conn_auto_initiate_call_work_submit(uc)
+    elif pc == uc.symbols['bt_conn_add_le']+0x28:
+        on_bt_conn_add_le_work_init(uc)
+    elif pc == uc.symbols['bt_att_chan_req_send']+0x28:
+        on_bt_att_chan_req_send(uc)
+    elif pc == uc.symbols['hci_cmd_done.isra.0']+0x1e:
+        on_cmd_data_index(uc)
+    elif pc == uc.symbols['bt_hci_cmd_create']+0x32:
+        on_cmd_data_index(uc)
+    elif pc == uc.symbols['bt_hci_cmd_send_sync']+0x24:
+        on_cmd_data_index(uc)
+    elif pc == uc.symbols['set_le_adv_enable_legacy.constprop.0']+0x30:
+        on_cmd_data_index(uc)
+    elif pc == uc.symbols['bt_init']+0x2ae:
+        on_le_init_check_2(uc)
+    elif pc == uc.symbols['bt_init']+0x1ba:
+        on_le_init_check_1(uc)
+
