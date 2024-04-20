@@ -267,7 +267,8 @@ def configure_unicorn(args):
     from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks,_hook_instruction,_hook_irq_function,hook_fuzzware_bugs
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
-    hook_fuzzware_bugs(uc)
+    if sys.argv[0] == "fuzzware_harness":
+        hook_fuzzware_bugs(uc)
     # my_add_hooks(uc)
     # uc.hook_add(UC_HOOK_BLOCK, _hook_instruction)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
