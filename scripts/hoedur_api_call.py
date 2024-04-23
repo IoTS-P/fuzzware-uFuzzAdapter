@@ -1,9 +1,9 @@
 import os, subprocess 
 
 python_file = "/home/n0vic3/fuzzers/fuzzware-uFuzzAdapter/scripts/gather_bug_detection_timings.py"
-basedir = "/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2020-10066"
-projdir_name_prefix = "0419_fuzz"
-ADAPTER = True
+basedir = "/home/n0vic3/fuzzers/fuzzware/examples/other_target_mmio_seedbin/CVE-2021-3329"
+projdir_name_prefix = "0420_fuzz"
+ADAPTER = False
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/activate"
     python_path = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/python"

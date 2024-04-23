@@ -6,32 +6,33 @@ import time
 from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 # 你提供的真实 crash 地址
-firmware_name = "CVE-2021-3329"
-real_crash_list = firmware_crashpc[firmware_name]
-#"0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413"
-time_list = ["0404","0405","0406","0408","0409","0415"]
+firmware_name = "10064_1"
+# real_crash_list = firmware_crashpc[firmware_name]
+#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413"
+time_list = ["0421"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
-ADAPTER = True
+ADAPTER = False
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "other_target"
+    group_name= "other_target_mmio_seedbin"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
-    firmware_name += "_interrupt"
-    group_name= "other_target_orig"
+    firmware_name += ""
+    group_name= "other_target_mmio_seedbin"
 # 用于存储真实 crash 地址的字典
-real_crash_addresses = {}
-for real_crash in real_crash_list:
-    real_crash_addresses[real_crash] = 0
+# real_crash_addresses = {}
+# for real_crash in real_crash_list:
+#     real_crash_addresses[real_crash] = 0
 # 提取 Basic Block 的 addr
 def process_path(crash_file_path, original_file_path, fuzzware_version):
     completed_crash_file_path = os.path.join(original_file_path, crash_file_path)
     mainxxx = crash_file_path.split('/')[0]
+
     config_file_path = os.path.join(original_file_path, mainxxx)
     command = f'{fuzzware_version} emu {completed_crash_file_path}'
 
@@ -42,25 +43,16 @@ def process_path(crash_file_path, original_file_path, fuzzware_version):
     return is_real_crash(output), crash_file_path
 # 判断是否是真实的 crash
 def is_real_crash(output):
-    # return "Heureka" in output
+    cve_result = []
+    # print(output)
     for line in output.split('\n'):
         if "Heureka" in line:
-            return True, line.split(' ')[-1]
-    return False, None
+            cve_result.append(line.split(' ')[-1])
+    if len(cve_result) > 0:
+        return True, cve_result
+    else:
+        return False, None
 
-# def get_control_flow_graph(original_file_path,crash_file_path):
-#     completed_crash_file_path = os.path.join(original_file_path,crash_file_path)
-#     mainxxx = crash_file_path.split('/')[0]
-#     config_file_path = os.path.join(original_file_path, mainxxx)
-#     command = f'{fuzzware_version} emu {completed_crash_file_path}'
-#     print(command)
-#     print(config_file_path)
-#     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,cwd=config_file_path)
-#     output, _ = process.communicate()
-#     output = output.decode('utf-8')
-#     # print(output)
-#     # 判断是否是真实的 crash
-#     return is_real_crash(output)
 
 def process_path(crash_file_path, original_file_path, fuzzware_version):
     completed_crash_file_path = os.path.join(original_file_path, crash_file_path)
@@ -76,20 +68,26 @@ def process_path(crash_file_path, original_file_path, fuzzware_version):
 
 def get_results(file_path):
     original_file_path = file_path
-    file_path = os.path.join(file_path, "stats", 'crash_contexts.txt')
+    file_path = os.path.join(file_path, "stats", 'crash_creation_timings.txt')
     
 
     # Read and process file lines
     crash_timing_worker_results = []
-    with open(file_path, 'r') as file:
-        lines = file.readlines()[1:]
-
+    if ADAPTER:
+        json_put_cmd = "json_file=$(ls *.json | head -n 1) && for dir in *_fuzz/; do for subdir in \"$dir\"main00*/; do if [[ -d \"$subdir\" ]]; then cp \"$json_file\" \"$subdir\"; fi; done; done"
+        subprocess.run(json_put_cmd, shell=True,cwd=os.path.dirname(os.path.dirname(os.path.dirname(file_path))),executable="/bin/bash")
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+    else:
+        subprocess.run(f"{fuzzware_version} genstats", shell=True,cwd=os.path.dirname(os.path.dirname(file_path)))
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
     tasks = []
     for line in lines:
         components = line.strip().split()
-        crash_paths = components[3:]  # 从每行中获取崩溃路径列表
-        for crash_path in crash_paths:
-            tasks.append((crash_path, original_file_path, fuzzware_version))
+        crash_path = components[-1]  # 从每行中获取崩溃路径列表
+        tasks.append((crash_path, original_file_path, fuzzware_version))
 
     # 使用进程池批量处理任务
     with Pool(processes=32) as pool:  # 根据CPU核心数量设置进程数
@@ -105,14 +103,15 @@ def get_results(file_path):
         if result:
             print(f"real crash: {crash_path}")
             real_crash.append(crash_path)
-            crash_results[group] = crash_results.get(group, 0) + 1
+            for g in group:
+                crash_results[g] = crash_results.get(g, 0) + 1
         else:
             print(f"false crash: {crash_path}")
             false_crash.append(crash_path)
 
 
     # Write results to file
-    write_path = file_path.replace('crash_contexts.txt', 'true_crash.txt')
+    write_path = file_path.replace('crash_creation_timings.txt', 'true_crash.txt')
     with open(write_path, 'w') as file:
         file.write(f"num of crashes:{len(real_crash)}\n")
         file.write(json.dumps(real_crash))
@@ -124,64 +123,6 @@ def get_results(file_path):
 
     print('Results written to:', write_path)
 
-# def get_results(file_path):
-#     # Get the path to the file
-#     original_file_path = file_path
-#     file_path = os.path.join(file_path,"stats", 'crash_contexts.txt')
-#     # Initialize a dictionary to store the results
-#     crash_results = {}
-#     real_crash = []
-#     false_crash = []
-#     i = 0
-#     with open(file_path, 'r') as file:
-#         for line in file.readlines()[1:]:
-#             # Split the line into components
-#             components = line.strip().split()
-#             # Extract the pc, lr, and crash paths
-#             num_unique_crashes = int(components[0])
-#             pc = components[1]
-#             lr = components[2]
-#             crash_paths = components[3:]
-
-#             # Select samples based on num_unique_crashes
-#             # if num_unique_crashes >= 10:
-#             #     selected_paths = random.sample(crash_paths, 10)
-#             # else:
-#             #     selected_paths = crash_paths
-#             selected_paths = crash_paths
-#             TRUE_CRASH = False
-            
-#             for one_selcet_path in selected_paths:
-#                 i += 1
-#                 print(f"current firmware:{firmware_name} current time:{time} crash:{i}")
-#                 result,group = get_control_flow_graph(original_file_path,one_selcet_path)
-#                 if not result:
-#                     print(f"false crash: {one_selcet_path}")
-#                     false_crash.append(one_selcet_path)
-#                 else:
-#                     TRUE_CRASH = True
-#                     print(f"real crash: {one_selcet_path}")
-#                     real_crash.append(one_selcet_path)
-#                     crash_results[group] = crash_results.get(group, 0) + 1
-#             # Store the results in the dictionary
-#                     # Update the dictionary with the information
-            
-        
-
-#     wrtie_path = file_path.replace('crash_contexts.txt', 'true_crash.txt')
-#     with open(wrtie_path, 'w') as file:
-#         file.write(f"num of crashes:{len(real_crash)}\n")
-#         file.write(json.dumps(real_crash))
-#         file.write('\n')
-#         file.write(f"num of false crashes:{len(false_crash)}\n")
-#         file.write(json.dumps(false_crash))
-#         file.write('\n')
-#         file.write(json.dumps(real_crash_addresses))
-#         file.write('\n')
-#         file.write(json.dumps(crash_results))
-#     for real_crash in real_crash_list:
-#         real_crash_addresses[real_crash] = 0
-#     print('Results written to:', wrtie_path)
     
 
 if __name__ == '__main__':

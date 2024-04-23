@@ -96,3 +96,21 @@ def on_fragment_remove_headers (uc):
 
     if buf_len < hdr_len:
         add_bug("fixed-Bug-fragment_header_len")
+
+def call_on_CVE_2020_10064(uc,address, size, user_data):
+    # net_if_ipv6_calc_reachable_time on_net_if_ipv6_calc_reachable_time
+# net_if_config_ipv6_get on_net_if_config_ipv6_get
+# ieee802154_reassemble+0x246 on_fragment_remove_headers
+# net_6lo_uncompress on_CVE_2021_3322
+# ieee802154_recv+0x42 on_CVE_2021_3320
+# memmove on_CVE_2020_10064
+    addr_handler = {
+        uc.symbols['net_if_ipv6_calc_reachable_time']: on_net_if_ipv6_calc_reachable_time,
+        uc.symbols['net_if_config_ipv6_get']: on_net_if_config_ipv6_get,
+        uc.symbols['ieee802154_reassemble'] + 0x246: on_fragment_remove_headers,
+        uc.symbols['net_6lo_uncompress']: on_CVE_2021_3322,
+        uc.symbols['ieee802154_recv'] + 0x42: on_CVE_2021_3320,
+        uc.symbols['memmove']: on_CVE_2020_10064
+    }
+    if addr_handler.get(uc.regs.pc):
+        addr_handler[uc.regs.pc](uc)

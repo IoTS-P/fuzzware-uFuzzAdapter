@@ -674,7 +674,7 @@ def on_net_buf_simple_push (uc):
         lr = globs.uc.regs.lr
         add_bug("GENERIC-net_buf_simple_push-underflow-{:08x}".format( lr))
 
-def call_on_CVE_2021_3329(uc):
+def call_on_CVE_2021_3329(uc,address, size, user_data):
     pc = uc.regs.pc
     if pc == uc.symbols['z_impl_k_sem_init']:
         on_semaphore_init(uc)
