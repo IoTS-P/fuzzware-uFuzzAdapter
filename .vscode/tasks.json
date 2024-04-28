@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Run Remote Python Script",
+        "type": "shell",
+        "command": "python3 /home/n0vic3/fuzzers/fuzzware-uFuzzAdapter/scripts/hook_fuzzware_bugs_deal.py", // 替换为远程服务器上Python脚本的实际路径
+        "problemMatcher": [],
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        }
+      },
+      {
+        "label": "Play Sound on Completion",
+        "type": "process",
+        "command": "powershell",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "Add-Type -AssemblyName System.Media;[System.Media.SystemSounds]::Beep()"
+        ],
+        "dependsOn": "Run Remote Python Script", // 这个任务依赖于上面运行Python脚本的任务
+        "presentation": {
+          "reveal": "silent"
+        }
+      }
+    ]
+  }

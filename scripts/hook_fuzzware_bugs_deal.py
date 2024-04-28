@@ -6,14 +6,15 @@ import time
 from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 # 你提供的真实 crash 地址
-firmware_name = "10064_1"
+firmware_name = "3320_1"
 # real_crash_list = firmware_crashpc[firmware_name]
-#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413"
-time_list = ["0421"]
+#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420",
+time_list = ["0421","0422","0423"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
-ADAPTER = False
+ADAPTER = True
+FORCE_GENSTATS = False
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
@@ -29,18 +30,6 @@ else:
 # for real_crash in real_crash_list:
 #     real_crash_addresses[real_crash] = 0
 # 提取 Basic Block 的 addr
-def process_path(crash_file_path, original_file_path, fuzzware_version):
-    completed_crash_file_path = os.path.join(original_file_path, crash_file_path)
-    mainxxx = crash_file_path.split('/')[0]
-
-    config_file_path = os.path.join(original_file_path, mainxxx)
-    command = f'{fuzzware_version} emu {completed_crash_file_path}'
-
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=config_file_path)
-    output, _ = process.communicate()
-    output = output.decode('utf-8')
-
-    return is_real_crash(output), crash_file_path
 # 判断是否是真实的 crash
 def is_real_crash(output):
     cve_result = []
@@ -90,7 +79,7 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
 
     # 使用进程池批量处理任务
-    with Pool(processes=32) as pool:  # 根据CPU核心数量设置进程数
+    with Pool(processes=72) as pool:  # 根据CPU核心数量设置进程数
         crash_timing_worker_results = pool.starmap(process_path, tasks)
 
     # Collecting results
@@ -120,7 +109,7 @@ def get_results(file_path):
         file.write(json.dumps(false_crash))
         file.write('\n')
         file.write(json.dumps(crash_results))
-
+    print(crash_results)
     print('Results written to:', write_path)
 
     
@@ -132,7 +121,17 @@ if __name__ == '__main__':
     
     for one_time in time_list:
         new_file_path = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
-        results = get_results(new_file_path)
-        print(results)
-        sum_results[one_time] = results
+        if not os.path.exists(os.path.join(new_file_path,"stats","true_crash.txt")) or FORCE_GENSTATS:
+            results = get_results(new_file_path)
+            print(results)
+            sum_results[one_time] = results
+        else:
+            with open(os.path.join(new_file_path,"stats","true_crash.txt"), 'r') as file:
+                lines = file.readlines()
+            # for i,line in enumerate(lines):
+            #     print(f"line {i}: {line}")
+            print(f"new_file_path: {new_file_path}")
+            print(lines[0].strip("\n"))
+            print(lines[4])
+            print("--------------------------------------------------------------------------------")
     print("all results: ", sum_results)

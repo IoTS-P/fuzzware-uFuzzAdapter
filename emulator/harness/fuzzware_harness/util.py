@@ -188,4 +188,4 @@ def load_config_deep(path):
     return resolve_config_includes(config, path)
 
 def my_debug_log(msg):
-    logger.debug(msg)
+    logger.info(msg)

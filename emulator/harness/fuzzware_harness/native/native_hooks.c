@@ -1544,12 +1544,12 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   #endif
   if (!dt->interrupt_times) {
     dt->interrupt_times = get_current_partition(dt);
-    printf("after getinterrupt_times = %d\n", dt->interrupt_times);
+    // printf("after getinterrupt_times = %d\n", dt->interrupt_times);
     return UC_ERR_OK;
   }
   nvic_set_pending(uc, dt->irq_num, false);
   dt->interrupt_times--;
-  printf("interrupt_times = %d\n", dt->interrupt_times);
+  // printf("interrupt_times = %d\n", dt->interrupt_times);
   // if (read_times == global_partion  && global_partion != 0) {
   //   printf("[Adapter]: Hit enough times %d\n", read_times);
   //   read_times = 0;

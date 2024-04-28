@@ -18,7 +18,7 @@ from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 
 # logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
-logging.basicConfig(filename='/tmp/emulator.log', level=logging.DEBUG,filemode="w")
+logging.basicConfig(filename='/tmp/emulatoraaa.log', level=logging.DEBUG,filemode="w")
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -264,11 +264,25 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,my_add_hooks,_hook_instruction,_hook_irq_function,hook_fuzzware_bugs
+    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,hook_fuzzware_bugs,heat_press_change_pc
     from .native import native_lib
     read_from_shm_json(config,native_lib,vtor)
+    logging.info(sys.argv)
     if sys.argv[0] == "fuzzware_harness":
         hook_fuzzware_bugs(uc)
+        # print(sys.argv)
+        # if "heat_press" in sys.argv[2]:
+        # uc.hook_add(UC_HOOK_BLOCK, heat_press_change_pc, None, 0x802a4, 0x802a8)
+    # else:
+    #     if "heat_press" in sys.argv[2]:
+    #         logging.info("heat_press")
+    #         
+    #         res2 = uc.hook_add(UC_HOOK_BLOCK, heat_press_avail_count, None, 0x8046c, 0x8046c)
+    #         res3 = uc.hook_add(UC_HOOK_BLOCK, heat_press_avail_count, None, 0x8049c, 0x8049c)
+    #         logging.info(f"res1:{res1} res2:{res2} res3:{res3}")
+    #     if "PLC" in sys.argv[2]:
+    #         uc.hook_add(UC_HOOK_BLOCK, plc_avail_count,None,0x8000b4a,0x8000b4a)
+    #         uc.hook_add(UC_HOOK_BLOCK, plc_avail_count,None,0x8000bba,0x8000bba)
     # my_add_hooks(uc)
     # uc.hook_add(UC_HOOK_BLOCK, _hook_instruction)
     native_lib.ufuzz_adapter_add_avail_hook(uc._uch)

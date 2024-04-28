@@ -96,7 +96,7 @@ def _hook_irq_function(uc, address, size, user_data):
     my_debug_log(f"irq function: {size:#x}")
     
 def hook_fuzzware_bugs(uc):
-    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066
+    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press
     # on_basic_block(uc,cve3319.call_on_CVE_2021_3319)
     # on_basic_block(uc,cve3320.call_on_CVE_2021_3320)
     # on_basic_block(uc,cve3321.call_on_CVE_2021_3321)
@@ -104,9 +104,10 @@ def hook_fuzzware_bugs(uc):
     # on_basic_block(uc,cve3323.call_on_CVE_2021_3323)
     # on_basic_block(uc,cve3329.call_on_CVE_2021_3329)
     # on_basic_block(uc,cve3330.call_on_CVE_2021_3330)
-    on_basic_block(uc,cve10064.call_on_CVE_2020_10064)
+    # on_basic_block(uc,cve10064.call_on_CVE_2020_10064)
     # on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
     # on_basic_block(uc,cve10066.call_on_CVE_2020_10066)
+    heat_press.hook_heat_press_words(uc)
     pass
 
 
@@ -149,3 +150,8 @@ def main_10066(uc):
     from .fuzzware_hook_folder import cve10066
     on_basic_block(uc,cve10066.call_on_CVE_2020_10066,0)
 
+def heat_press_change_pc(uc, address, size, user_data):
+    '''
+    hook function to change pc
+    '''
+    uc.reg_write(UC_ARM_REG_PC, 0x0802aa)
