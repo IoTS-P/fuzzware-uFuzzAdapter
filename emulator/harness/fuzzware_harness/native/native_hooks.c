@@ -169,7 +169,7 @@ void do_exit(uc_engine *uc, uc_err err) {
 #ifdef MYDEBUG
   char buf[100];
   sprintf(buf, "exit with error code %d\n", err);
-  // my_debug_log(buf);
+  my_debug_log(buf);
 #endif
   if (!duplicate_exit) {
     custom_exit_reason = err;
@@ -662,14 +662,14 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   uint64_t result_val = 0;
   uint64_t fuzzer_val = 0;
   // 查找元素
-  // khint_t k = kh_get(dr_dt, hash_table, addr);
-  // if (k != kh_end(hash_table)) {
-  //   //   // 找到了元素
-  //   DataTracker *dt = kh_value(hash_table, k);
-  //   if (fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-  //     return;
-  //   }
-  // }
+  khint_t k = kh_get(dr_dt, hash_table, addr);
+  if (k != kh_end(hash_table)) {
+    //   // 找到了元素
+    DataTracker *dt = kh_value(hash_table, k);
+    if (fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+      return;
+    }
+  }
 
   if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
     return;
@@ -1440,16 +1440,16 @@ int fill_data_tracker_main_dt_array(uint32_t dr, uint32_t callread_pc,
   main_dt_array[main_dt_array_index].irq_num = 0;
   main_dt_array[main_dt_array_index].fifo_head = 0;
   main_dt_array[main_dt_array_index].fifo_tail = 0;
-  // if (hash_table == NULL) {
-  //   init_dr_dt_hash();
-  // }
+  if (hash_table == NULL) {
+    init_dr_dt_hash();
+  }
   // 插入元素
-  // int ret = 0;
-  // khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
-  // if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
-  //   kh_value(hash_table, k) =
-  //       &main_dt_array[main_dt_array_index]; // 设置键对应的值
-  // }
+  int ret = 0;
+  khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
+    kh_value(hash_table, k) =
+        &main_dt_array[main_dt_array_index]; // 设置键对应的值
+  }
   main_dt_array_index++;
   return 0;
 }
@@ -1476,16 +1476,16 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].fifo_tail = 0;
   irq_dt_array[irq_dt_array_index].interrupt_times = 0;
   vtor_num = vtor;
-  // if (hash_table == NULL) {
-  //   init_dr_dt_hash();
-  // }
+  if (hash_table == NULL) {
+    init_dr_dt_hash();
+  }
   // 插入元素
-  // int ret = 0;
-  // khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
-  // if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
-  //   kh_value(hash_table, k) =
-  //       &irq_dt_array[irq_dt_array_index]; // 设置键对应的值
-  // }
+  int ret = 0;
+  khint_t k = kh_put(dr_dt, hash_table, dr, &ret); // 插入键
+  if (ret != -1) { // 如果 ret 不是 -1，说明插入成功
+    kh_value(hash_table, k) =
+        &irq_dt_array[irq_dt_array_index]; // 设置键对应的值
+  }
   irq_dt_array_index++;
   return 0;
 }

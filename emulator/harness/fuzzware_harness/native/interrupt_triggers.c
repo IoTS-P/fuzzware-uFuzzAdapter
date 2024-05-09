@@ -92,9 +92,9 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
             case IRQ_FUZZ_MODE_ROUND_ROBIN:
                 if (get_num_enabled()) {
                     trigger->irq = nth_enabled_irq_num(trigger->round_robin_index++);
-                    // if(trigger->irq == skip_interrupt){
-                    //     trigger->irq = 0;
-                    // }
+                    if(trigger->irq == skip_interrupt){
+                        trigger->irq = 0;
+                    }
                     #ifdef DEBUG_INTERRUPT_TRIGGERS
                     printf("[INTERRUPT TRIGGER] Round robin: Pending nth (%d) interrupt: %d\n", trigger->round_robin_index, trigger->irq);
                     #endif
