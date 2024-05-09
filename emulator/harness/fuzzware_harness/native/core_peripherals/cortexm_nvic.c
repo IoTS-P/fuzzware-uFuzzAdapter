@@ -1333,8 +1333,7 @@ uc_err init_nvic(uc_engine *uc, uint32_t vtor, uint32_t num_irq, uint32_t p_inte
     uc_hook_add(uc, &hook_mmio_write_handle, UC_HOOK_MEM_WRITE, hook_sysctl_mmio_write, NULL, SYSCTL_MMIO_BASE, SYSCTL_MMIO_END);
     uc_hook_add(uc, &hook_mmio_read_handle, UC_HOOK_MEM_READ, hook_sysctl_mmio_read, NULL, SYSCTL_MMIO_BASE, SYSCTL_MMIO_END);
 
-    // uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL, 1, 0);
-    uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL,0,0xffffffff);
+    uc_hook_add(uc, &hook_svc_handle, UC_HOOK_INTR, handler_svc, NULL, 1, 0);
 
     subscribe_state_snapshotting(uc, nvic_take_snapshot, nvic_restore_snapshot, nvic_discard_snapshot);
 
