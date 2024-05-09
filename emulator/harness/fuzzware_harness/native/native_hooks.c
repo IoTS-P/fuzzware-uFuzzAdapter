@@ -802,13 +802,13 @@ uc_err register_bitextract_mmio_models(uc_engine *uc, uint64_t *starts,
       mask >>= 1;
     }
 
-    // #ifdef DEBUG
+    #ifdef DEBUG
     printf("Registering bitextract model for range: [%x] %lx - %lx with size, "
            "left_shift: %d, %d. Mask: %08x, hw: %d\n",
            pcs[i], starts[i], ends[i], byte_sizes[i], left_shifts[i], masks[i],
            model_configs[i].mask_hamming_weight);
     fflush(stdout);
-    // #endif
+    #endif
 
     if (add_mmio_subregion_handler(uc, bitextract_mmio_model_handler, starts[i],
                                    ends[i], pcs[i],
@@ -1536,9 +1536,10 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     dt->irq_num =
         (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
   }
+  skip_interrupt = dt->irq_num;
   #ifdef MYDEBUG
   char buf[100];
-  skip_interrupt = dt->irq_num;
+  
   sprintf(buf, "irq_num = %d\n", dt->irq_num);
   my_debug_log(buf);
   #endif

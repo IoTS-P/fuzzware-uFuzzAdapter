@@ -6,10 +6,10 @@ import time
 from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 # 你提供的真实 crash 地址
-firmware_name = "3320_1"
+firmware_name = "10064_0"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420",
-time_list = ["0421","0422","0423"]
+time_list = ["0423"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 

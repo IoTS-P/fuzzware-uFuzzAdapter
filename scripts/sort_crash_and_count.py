@@ -5,23 +5,23 @@ import os, json,random,subprocess,re
 from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 # 你提供的真实 crash 地址
-firmware_name = "plc"
+firmware_name = "PLC"
 real_crash_list = firmware_crashpc[firmware_name]
-#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413"
-time_list = ["0421"]
+#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413""0423","0425","0426","0427"
+time_list = ["0301"]
 
-ADAPTER = False
+ADAPTER = True
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "other_target_mmio_seedbin"
+    group_name= "P2IM"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
     # _inter or _idle
-    firmware_name += "_0419_0"
-    group_name= "P2IM"
+    firmware_name += ""
+    group_name= "uEmu"
 # 用于存储真实 crash 地址的字典
 real_crash_addresses = {}
 for real_crash in real_crash_list:
@@ -102,10 +102,10 @@ def get_results(file_path):
     
     # 使用进程池批量处理任务
     crash_timing_worker_results = []
-    with Pool(processes=32) as pool:  # 根据CPU核心数量设置进程数
+    with Pool(processes=128) as pool:  # 根据CPU核心数量设置进程数
         crash_timing_worker_results = pool.starmap(get_control_flow_graph, tasks)
     for i, result in enumerate(crash_timing_worker_results):
-        if result:
+        if result[0]:
             real_crash.append(tasks[i][1])
             real_crash_addresses[result[1]] += 1
         else:
@@ -114,15 +114,19 @@ def get_results(file_path):
 
     wrtie_path = file_path.replace('crash_creation_timings.txt', 'sort_pc_true_crash.txt')
     with open(wrtie_path, 'w') as file:
-        
-        file.write(json.dumps(real_crash))
-        file.write('\n')
         file.write(json.dumps(real_crash_addresses))
+        file.write('\n')
+        file.write(json.dumps(real_crash))
+        
+        
     for real_crash in real_crash_list:
         real_crash_addresses[real_crash] = 0
     print('Results written to:', wrtie_path)
     return crash_results
 
+def post_exec_pushplus(title,content):
+    import requests
+    requests.get(f"http://www.pushplus.plus/send?token=784df1822b964c4a9dd13e1513ca37f3&title={title}&content={content}&template=html")
 if __name__ == '__main__':
     
     
@@ -134,3 +138,4 @@ if __name__ == '__main__':
         print(results)
         sum_results[time] = results
     print("all results: ", sum_results)
+    post_exec_pushplus("sort_pc_true_crash",json.dumps(sum_results))

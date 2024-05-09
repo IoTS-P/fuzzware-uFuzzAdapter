@@ -1,8 +1,8 @@
 import re,os,subprocess
-firmware_name = "Heat_Press"
+firmware_name = "uEmu.GPSTracker"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0421","0422","0423"
-time_list = ["0301"]
+time_list = ["0419","0420","0421","0422","0423"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
@@ -13,12 +13,12 @@ if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "P2IM"
+    group_name= "uEmu"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
     firmware_name += ""
-    group_name= "other_target_mmio_seedbin"
+    group_name= "uEmu"
 def extract_coverage_data(log_path):
     with open(log_path, 'r') as file:
         lines = file.readlines()

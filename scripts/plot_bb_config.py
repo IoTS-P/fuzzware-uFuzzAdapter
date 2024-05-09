@@ -2,7 +2,7 @@ baseline_folder ={
     "CNC": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "Console": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "Gateway": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
-    "Heat_Press" : ["0307_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
+    "Heat_Press" : ["0307_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0426_fuzz"],
     "Drone": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "PLC": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "Reflow_Oven": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
@@ -45,5 +45,8 @@ firmware_crashpc = {"CVE-2021-3329":["af74"],
                     "3319-30":["40d37c","403a70","af74"],
                     "PLC":["80008c2", "8000a5a","8000ae4","8000978"],
                     "plc":["80008c2", "8000a5a","8000ae4","8000978"],
-
+                    "Heat_Press":["8040c"],
+                    "Gateway":["8006b20","8006096","8002fc6","8004f40","8008774"],
+                    "uEmu.3Dprinter":["2000057c"],
+                    "uEmu.GPSTracker":["84415","83e07","80a35","83d87","83c11","80f64"]
                     }

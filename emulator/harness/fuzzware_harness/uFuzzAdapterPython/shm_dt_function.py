@@ -96,7 +96,7 @@ def _hook_irq_function(uc, address, size, user_data):
     my_debug_log(f"irq function: {size:#x}")
     
 def hook_fuzzware_bugs(uc):
-    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press
+    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press,plc,gateway
     # on_basic_block(uc,cve3319.call_on_CVE_2021_3319)
     # on_basic_block(uc,cve3320.call_on_CVE_2021_3320)
     # on_basic_block(uc,cve3321.call_on_CVE_2021_3321)
@@ -107,7 +107,12 @@ def hook_fuzzware_bugs(uc):
     # on_basic_block(uc,cve10064.call_on_CVE_2020_10064)
     # on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
     # on_basic_block(uc,cve10066.call_on_CVE_2020_10066)
-    heat_press.hook_heat_press_words(uc)
+    # heat_press.hook_heat_press_words(uc)
+    # plc.hook_plc_words(uc)
+    # plc.hook_plc_addr(uc)
+    # heat_press.hook_heat_press_addr(uc)
+    # uc.hook_add(UC_HOOK_BLOCK,soldering_iron_idle,0x8006a68-1,0x8006a68|1)
+    gateway.hook_gateway_addr(uc)
     pass
 
 
@@ -155,3 +160,14 @@ def heat_press_change_pc(uc, address, size, user_data):
     hook function to change pc
     '''
     uc.reg_write(UC_ARM_REG_PC, 0x0802aa)
+
+# soldering_idle_times= 0
+# def soldering_iron_idle(uc, address, size, user_data):
+#     '''
+#     hook function to change pc
+#     '''
+#     global soldering_idle_times
+#     soldering_idle_times += 1
+#     import json
+#     print(json.dumps({"soldering_iron_idle":soldering_idle_times}))
+

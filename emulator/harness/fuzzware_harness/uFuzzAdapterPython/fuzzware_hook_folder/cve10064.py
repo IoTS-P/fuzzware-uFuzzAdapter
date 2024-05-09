@@ -36,10 +36,12 @@ def on_CVE_2020_10064 (uc):
     # Check for size underflow in memmove call from net_6lo_uncompress
     if globs.uc.regs.r2 > 0xf0000000 and globs.uc.regs.lr == MEMMOVE_CALL_LOC_net_6lo_uncompress:
         add_bug("CVE-2020-10064")
+        pass
 
 def on_CVE_2021_3320 (uc):
     if globs.uc.regs.r3 == IEEE802154_FRAME_TYPE_ACK:
         add_bug("COLLISION-CVE-2021-3320")
+        pass
 
 def on_CVE_2021_3322 (uc):
     # Check for NULL ptr in pkt->frags

@@ -19,6 +19,7 @@ import json
 fucntion_times = {}
 for word in heat_press_words:
     fucntion_times[word] = 0
+addr_times = {0x8043a:0,0x80470:0}
 
 from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 from ...globs import uc
@@ -40,3 +41,11 @@ def hook_heat_press_words(uc):
     heat_press_address_to_word = {uc.symbols[word]: word for word in heat_press_words}
     for address in heat_press_address_to_word.keys():
         uc.hook_add(UC_HOOK_BLOCK, function_times_handler, begin=address-1, end=address|1)
+
+def addr_times_handler(uc, address, size, user_data):
+    addr_times[address] += 1
+    print(json.dumps(addr_times))
+
+def hook_heat_press_addr(uc):
+    for address in addr_times.keys():
+        uc.hook_add(UC_HOOK_BLOCK, addr_times_handler, begin=address-1, end=address|1)

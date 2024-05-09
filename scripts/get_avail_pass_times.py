@@ -1,20 +1,21 @@
 # The file seems to have a structure where each line contains information about a unique crash.
 # The structure is: <num_unique_crashes> pc lr <crash_path_1> <crash_path_2> ...
 # We will read the file and process the data accordingly.
-import os, json,random,subprocess,re
-import time
-from plot_bb_config import firmware_crashpc
-from multiprocessing import Pool
+import os, json,subprocess
+from multiprocessing import Pool,Value
+import ctypes
+
 # 你提供的真实 crash 地址
-firmware_name = "heat_press_3"
+firmware_name = "Gateway"
 # real_crash_list = firmware_crashpc[firmware_name]
-#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420",
-time_list = ["0426"]
+#"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0301","0302","0303","0304","0305","0307","0308","0309","0310",
+time_list = ["0311"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
 ADAPTER = True
 FORCE_GENSTATS = False
+input_file_id = 0
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
@@ -24,33 +25,35 @@ else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
     firmware_name += ""
-    group_name= "other_target_mmio_seedbin"
+    group_name= "P2IM"
 
 def extracted_json_data(output):
+    # print(output)
     results = output.split('\n')[::-1]
     for line in results:
         try:
             data = json.loads(line)
             if type(data) == dict:
+                print(data)
                 return data
             else:
                 continue
         except:
             pass
         
-
         
 
-def process_path(input_file_path, original_file_path, fuzzware_version):
+def process_path(input_file_path, original_file_path, fuzzware_version,):
+
     completed_input_file_path = os.path.join(original_file_path, input_file_path)
     mainxxx = input_file_path.split('/')[0]
     config_file_path = os.path.join(original_file_path, mainxxx)
     command = f'{fuzzware_version} emu {completed_input_file_path}'
-    print(f"completed_input_file_path:{completed_input_file_path}")
+    
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=config_file_path)
     output, _ = process.communicate()
     output = output.decode('utf-8')
-
+    print("current_input_file_path:",completed_input_file_path)
     return extracted_json_data(output),input_file_path
 
 def get_results(file_path):
@@ -77,10 +80,12 @@ def get_results(file_path):
         components = line.strip().split()
         crash_path = components[-1]  # 从每行中获取崩溃路径列表
         tasks.append((crash_path, original_file_path, fuzzware_version))
-
+    tasks_nums = len(tasks)
     # 使用进程池批量处理任务
-    with Pool(processes=156) as pool:
+    with Pool(processes=128) as pool:
         crash_timing_worker_results = pool.starmap(process_path, tasks)
+        # print(f"completed_input_file_path:{input_file_id}/{tasks_nums}")
+        
 
     # Collecting results
     for async_data,input_file_path in crash_timing_worker_results:
@@ -100,14 +105,24 @@ def get_results(file_path):
     with open(results_path, 'w') as file:
         json.dump(function_call_counts, file, indent=4)
     print('Function call counts written to:', results_path)
+    all_avail_function_times = 0
+    for value in function_call_counts.values():
+        all_avail_function_times += value
+    print(f"all_avail_function_times: {all_avail_function_times}")
     return function_call_counts
+
+def post_exec_pushplus(title,content):
+    import requests
+    requests.get(f"http://www.pushplus.plus/send?token=784df1822b964c4a9dd13e1513ca37f3&title={title}&content={content}&template=html")
 
 if __name__ == '__main__':
     sum_results = {}
     
     for one_time in time_list:
+        input_file_id = 0
         new_file_path = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
         if not os.path.exists(os.path.join(new_file_path, "stats", "avail_times.txt")) or FORCE_GENSTATS:
             results = get_results(new_file_path)
             sum_results[one_time] = results
     print("All results: ", sum_results)
+    post_exec_pushplus(f"Function call counts for {firmware_name}", str(sum_results))
