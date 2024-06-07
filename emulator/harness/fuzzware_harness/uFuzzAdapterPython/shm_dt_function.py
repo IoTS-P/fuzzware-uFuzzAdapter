@@ -96,7 +96,7 @@ def _hook_irq_function(uc, address, size, user_data):
     my_debug_log(f"irq function: {size:#x}")
     
 def hook_fuzzware_bugs(uc):
-    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press,plc,gateway
+    from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press,plc,gateway,solderring_iron
     # on_basic_block(uc,cve3319.call_on_CVE_2021_3319)
     # on_basic_block(uc,cve3320.call_on_CVE_2021_3320)
     # on_basic_block(uc,cve3321.call_on_CVE_2021_3321)
@@ -112,7 +112,9 @@ def hook_fuzzware_bugs(uc):
     # plc.hook_plc_addr(uc)
     # heat_press.hook_heat_press_addr(uc)
     # uc.hook_add(UC_HOOK_BLOCK,soldering_iron_idle,0x8006a68-1,0x8006a68|1)
-    gateway.hook_gateway_addr(uc)
+    # gateway.hook_gateway_addr(uc)
+    # cve10064.avail_div_allfunc(uc)
+    # solderring_iron.avail_div_allfunc(uc)
     pass
 
 

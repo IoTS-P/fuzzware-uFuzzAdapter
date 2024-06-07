@@ -8,6 +8,7 @@
 
 from fuzzware_harness import globs
 from unicorn import UcError
+import json
 
 def add_bug(name):
     print(f"Heureka! {name}", flush=True)
@@ -116,3 +117,20 @@ def call_on_CVE_2020_10064(uc,address, size, user_data):
     }
     if addr_handler.get(uc.regs.pc):
         addr_handler[uc.regs.pc](uc)
+
+addr_times = {}
+def addr_times_handler(uc, address, size, user_data):
+    addr_times[address] += 1
+    print(json.dumps(addr_times))
+
+def global_block_handler(uc, address, size, user_data):
+    if address in addr_times:
+        addr_times[address] += 1
+        print(json.dumps(addr_times))
+
+def avail_div_allfunc(uc):
+    from unicorn import UC_HOOK_BLOCK
+    for address in uc.symbols.values():
+    # 为每个地址添加代码hook
+        addr_times[address] = 0
+    uc.hook_add(UC_HOOK_BLOCK, global_block_handler, user_data=None, begin=0, end=0xffffffff)

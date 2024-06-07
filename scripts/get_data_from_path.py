@@ -1,24 +1,25 @@
 import re,os,subprocess
-firmware_name = "uEmu.GPSTracker"
+firmware_name = "Steering_Control"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0421","0422","0423"
-time_list = ["0419","0420","0421","0422","0423"]
+#"0301","0302","0303","0304","0305","0307","0308","0309","0310","0311"
+time_list = ["0216","0218","0219","0220","0224","0419","0420","0421","0422","0423"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
-ADAPTER = True
+ADAPTER = False
 GET_CRASH_TYPE = False
 
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "uEmu"
+    group_name= "P2IM"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
     firmware_name += ""
-    group_name= "uEmu"
+    group_name= "P2IM"
 def extract_coverage_data(log_path):
     with open(log_path, 'r') as file:
         lines = file.readlines()
@@ -66,14 +67,18 @@ if __name__ == "__main__":
         coverage_log_path = base_path+"/logs/pipeline.log"
         crash_log_path = base_path+"/stats/crash_creation_timings.txt"
         crash_context_path = base_path+"/stats/crash_contexts.txt"
+        input_log_path = base_path+"/stats/input_creation_timings.txt"
         coverage_percentage,basic_blocks = extract_coverage_data(coverage_log_path)
         first_crash_time, unique_crashes = extract_crash_data(crash_log_path)
         if GET_CRASH_TYPE:
             crash_type = get_crash_types(crash_context_path)
             print(f"Crash type: {crash_type}")
         print(f"base_path: {base_path}")
-        print(f"Basic blocks: {basic_blocks}")
-        print(f"Coverage percentage: {coverage_percentage}%")
+        # print(f"Basic blocks: {basic_blocks}")
+        # print(f"Coverage percentage: {coverage_percentage}%")
         # print(f"First crash time: {first_crash_time}")
-        print(f"Unique crashes: {unique_crashes}")
+        # print(f"Unique crashes: {unique_crashes}")1402
+        input_log_lines = open(input_log_path).readlines()
+        print(f"Total inputs: {len(input_log_lines)}")
+        print("=====================================")
         

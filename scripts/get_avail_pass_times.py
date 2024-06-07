@@ -6,16 +6,16 @@ from multiprocessing import Pool,Value
 import ctypes
 
 # 你提供的真实 crash 地址
-firmware_name = "Gateway"
+firmware_name = "Soldering_Iron"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0301","0302","0303","0304","0305","0307","0308","0309","0310",
-time_list = ["0311"]
+#,"0218","0219","0220","0224","0301","0302","0303","0304","0305","0414","0416"
+time_list = ["0218","0219","0220","0224","0216"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
-ADAPTER = True
+ADAPTER = False
 FORCE_GENSTATS = False
-input_file_id = 0
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
@@ -34,7 +34,7 @@ def extracted_json_data(output):
         try:
             data = json.loads(line)
             if type(data) == dict:
-                print(data)
+                print(len(data))
                 return data
             else:
                 continue
@@ -82,9 +82,8 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
     tasks_nums = len(tasks)
     # 使用进程池批量处理任务
-    with Pool(processes=128) as pool:
+    with Pool(processes=100) as pool:
         crash_timing_worker_results = pool.starmap(process_path, tasks)
-        # print(f"completed_input_file_path:{input_file_id}/{tasks_nums}")
         
 
     # Collecting results
@@ -104,25 +103,31 @@ def get_results(file_path):
     results_path = os.path.join(original_file_path, 'function_call_counts.json')
     with open(results_path, 'w') as file:
         json.dump(function_call_counts, file, indent=4)
+        all_avail_function_times = 0
+        for value in function_call_counts.values():
+            all_avail_function_times += value
+        
+        print(f"all_avail_function_times: {all_avail_function_times}")
+        json.dump(f"all_avail_function_times: {all_avail_function_times}", file, indent=4)
     print('Function call counts written to:', results_path)
-    all_avail_function_times = 0
-    for value in function_call_counts.values():
-        all_avail_function_times += value
-    print(f"all_avail_function_times: {all_avail_function_times}")
+
     return function_call_counts
 
 def post_exec_pushplus(title,content):
+
     import requests
-    requests.get(f"http://www.pushplus.plus/send?token=784df1822b964c4a9dd13e1513ca37f3&title={title}&content={content}&template=html")
+    
+    content = len(content)
+    res = requests.get(f"http://www.pushplus.plus/send?token=784df1822b964c4a9dd13e1513ca37f3&title={title}&content={content}&template=html")
+    print(res.content)
 
 if __name__ == '__main__':
     sum_results = {}
     
     for one_time in time_list:
-        input_file_id = 0
         new_file_path = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
         if not os.path.exists(os.path.join(new_file_path, "stats", "avail_times.txt")) or FORCE_GENSTATS:
             results = get_results(new_file_path)
             sum_results[one_time] = results
     print("All results: ", sum_results)
-    post_exec_pushplus(f"Function call counts for {firmware_name}", str(sum_results))
+    post_exec_pushplus(f"Function call counts for {firmware_name}", sum_results)
