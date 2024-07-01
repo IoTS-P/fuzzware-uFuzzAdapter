@@ -166,11 +166,6 @@ void do_exit(uc_engine *uc, uc_err err) {
   if (do_print_exit_info) {
     fflush(stdout);
   }
-#ifdef MYDEBUG
-  char buf[100];
-  sprintf(buf, "exit with error code %d\n", err);
-  my_debug_log(buf);
-#endif
   if (!duplicate_exit) {
     custom_exit_reason = err;
     duplicate_exit = true;
