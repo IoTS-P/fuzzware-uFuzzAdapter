@@ -68,7 +68,7 @@ def process_all_logs(directory_path, output_file_path, max_workers=4):
     print(f"Processed {len(unique_entries)} unique entries.")
 
 # 使用指定的日志目录和输出文件路径调用函数
-log_directory = '/home/n0vic3/fuzzers/fuzzware-examples/month6_adapter/CVE-2023-00000_1/0618_fuzz/main017/crash_info'  # 替换为日志文件所在的目录路径
+log_directory = '/home/n0vic3/fuzzers/fuzzware/examples/month6_original/riot-CVE-2023-24817_18_21_26-33974_5/group_3/0701_fuzz/main013/crash_info'  # 替换为日志文件所在的目录路径
 output_file = os.path.join(os.path.dirname(log_directory),"unique_entries.txt")  
 
 process_all_logs(log_directory, output_file)

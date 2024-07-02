@@ -4,9 +4,9 @@ from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 
 # 你提供的真实 crash 地址
-firmware_name = "CVE-2023-00000"
-firmware_name += "_0"
-time_list = ["0618"]
+firmware_name = "riot-CVE-2023-24819_20_22_23_25-33973"
+firmware_name += ""
+time_list = ["0701"]
 ADAPTER = False
 FORCE_GENSTATS = True
 if ADAPTER:
@@ -128,18 +128,18 @@ def post_exec_pushplus(title, content):
 
 if __name__ == '__main__':
     sum_results = {}
-    
-    for one_time in time_list:
-        new_file_path = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
-        if not os.path.exists(os.path.join(new_file_path, "stats", "true_crash.txt")) or FORCE_GENSTATS:
-            results = get_results(new_file_path)
-            print(results)
-            sum_results[one_time] = results
-        else:
-            with open(os.path.join(new_file_path, "stats", "true_crash.txt"), 'r') as file:
-                lines = file.readlines()
-            print(f"new_file_path: {new_file_path}")
-            print(lines[0].strip("\n"))
-            print(lines[4])
-            print("--------------------------------------------------------------------------------")
+    for group_index in range(5):  # Loop through group_0 to group_4
+        for one_time in time_list:
+            new_file_path = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
+            if not os.path.exists(os.path.join(new_file_path, "stats", "true_crash.txt")) or FORCE_GENSTATS:
+                results = get_results(new_file_path)
+                print(results)
+                sum_results[one_time] = results
+            else:
+                with open(os.path.join(new_file_path, "stats", "true_crash.txt"), 'r') as file:
+                    lines = file.readlines()
+                print(f"new_file_path: {new_file_path}")
+                print(lines[0].strip("\n"))
+                print(lines[4])
+                print("--------------------------------------------------------------------------------")
     print("all results: ", sum_results)
