@@ -15,6 +15,7 @@ def read_from_shm_json(config,c_lib,vtor):
             if file.endswith(".json"):
                 shm_file = os.path.join(root, file)
                 break
+    
     emulation_handler_serialized_data = json.load(open(shm_file, "r"))
     irq_dt_set = emulation_handler_serialized_data["irq_dt_set"]
     main_dt_set = emulation_handler_serialized_data["main_dt_set"]
@@ -100,7 +101,7 @@ def hook_fuzzware_bugs(uc):
     from .fuzzware_hook_folder.riotmore import cve23_00000,cve_781645,cve_902353
     # uc.hook_add(UC_HOOK_CODE,cve23_00000.check_call)
     # uc.hook_add(UC_HOOK_CODE,cve_781645.check_call)
-    uc.hook_add(UC_HOOK_CODE,cve_902353.check_call)
+    # uc.hook_add(UC_HOOK_CODE,cve_902353.check_call)
     # on_basic_block(uc,cve3319.call_on_CVE_2021_3319)
     # on_basic_block(uc,cve3320.call_on_CVE_2021_3320)
     # on_basic_block(uc,cve3321.call_on_CVE_2021_3321)

@@ -6,8 +6,8 @@ from datetime import timedelta, datetime
 import matplotlib.dates as mdates
 from plot_bb_config import *
 
-firmware_name = 'Gateway'
-group_name = 'P2IM'
+firmware_name = 'uEmu.GPSTracker'
+group_name = 'uEmu'
 Baseline_base_path = f'/home/n0vic3/fuzzers/fuzzware/examples/{group_name}/{firmware_name}'
 Adapter_base_path = f'/home/n0vic3/fuzzers/fuzzware-examples/{group_name}/{firmware_name}'
 graph_title = f"fuzzware/{firmware_name}"
@@ -66,10 +66,15 @@ plot_median_and_range(adapter_data, '#AE3347', 'Adapter', '^')
 
 plt.title(graph_title)
 # plt.xlabel('Time (Hours)')
-plt.ylabel('Number of Basic Blocks')
+# plt.ylabel('Number of Basic Blocks')
 
 plt.grid(True)
 # plt.legend()  # 注释掉这一行去掉图例
+
+# 去掉上框线和右框线
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+
 plot_file_path = os.path.join(graph_save_directory, 'comparison_plot.png')
 plt.savefig(plot_file_path, dpi=300)
 print(f'Plot saved to {plot_file_path}')
