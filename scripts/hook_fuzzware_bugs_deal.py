@@ -3,16 +3,16 @@ import time
 from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 
-# 你提供的真实 crash 地址
-firmware_name = "riot-CVE-2023-24819_20_22_23_25-33973"
+# Provided real crash address
+firmware_name = "CVE-2020-10065"
 firmware_name += ""
-time_list = ["0701"]
-ADAPTER = False
+time_list = ["0421"]
+ADAPTER = True
 FORCE_GENSTATS = True
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
-    group_name = "month6_adapter"
+    group_name = "other_target_mmio_seedbin"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
@@ -20,10 +20,14 @@ else:
 
 def is_real_crash(output):
     cve_result = []
+    seen_cves = set()
     print(output)
     for line in output.split('\n'):
         if "Heureka" in line:
-            cve_result.append(line.split(' ')[-1])
+            cve = line.split(' ')[-1]
+            if cve not in seen_cves:
+                cve_result.append(cve)
+                seen_cves.add(cve)
     if len(cve_result) > 0:
         return True, cve_result
     else:
@@ -60,11 +64,11 @@ def get_results(file_path):
     tasks = []
     for line in lines:
         components = line.strip().split()
-        crash_path = components[-1]  # 从每行中获取崩溃路径列表
+        crash_path = components[-1]  # Get the crash path from each line
         tasks.append((crash_path, original_file_path, fuzzware_version))
 
-    # 使用进程池批量处理任务
-    with Pool(processes=128) as pool:  # 根据CPU核心数量设置进程数
+    # Use a process pool to process tasks in batches
+    with Pool(processes=32) as pool:  # Set the number of processes based on CPU cores
         crash_timing_worker_results = pool.starmap(process_path, tasks)
 
     # Collecting results
@@ -106,9 +110,9 @@ def get_results(file_path):
         cve_file.write(f"Firmware: {firmware_name}\n")
         cve_file.write(f"num of crashes:{len(real_crash)}\n")
         cve_file.write(json.dumps(real_crash))
-        cve_file.write('\n')
-        cve_file.write(f"num of false crashes:{len(false_crash)}\n")
-        cve_file.write(json.dumps(false_crash))
+        # cve_file.write('\n')
+        # cve_file.write(f"num of false crashes:{len(false_crash)}\n")
+        # cve_file.write(json.dumps(false_crash))
         cve_file.write('\n')
         cve_file.write(json.dumps(crash_results))
         cve_file.write('\n')
@@ -118,11 +122,10 @@ def get_results(file_path):
             cve_file.write('\n--------------------------------------------------------------------------------\n')
     print('CVE-specific results written to:', cve_write_path)
 
-    post_exec_pushplus(f"crash results: {firmware_name}", f"num of crashes:{len(real_crash)}\nnum of false crashes:{len(false_crash)}")
+    # post_exec_pushplus(f"crash results: {firmware_name}", f"num of crashes:{len(real_crash)}\nnum of false crashes:{len(false_crash)}")
 
 def post_exec_pushplus(title, content):
     import requests
-    content = len(content)
     res = requests.get(f"http://www.pushplus.plus/send?token=784df1822b964c4a9dd13e1513ca37f3&title={title}&content={content}&template=html")
     print(res.content)
 
@@ -143,3 +146,4 @@ if __name__ == '__main__':
                 print(lines[4])
                 print("--------------------------------------------------------------------------------")
     print("all results: ", sum_results)
+    post_exec_pushplus("hook_fuzzware_bugs_deal.py", "all results: sum_results")

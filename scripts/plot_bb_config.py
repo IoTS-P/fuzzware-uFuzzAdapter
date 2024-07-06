@@ -10,8 +10,8 @@ baseline_folder ={
     "Soldering_Iron": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "Steering_Control": ["0216_fuzz","0218_fuzz","0219_fuzz","0220_fuzz","0224_fuzz"],
     "XML_Parser": ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
-    "uEmu.GPSTracker" : ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0317_fuzz"],
-    "uEmu.3Dprinter" : ["0308_fuzz","0310_fuzz","0311_fuzz","0317_fuzz","0318_fuzz"],
+    "GPSTracker" : ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0317_fuzz"],
+    "3Dprinter" : ["0308_fuzz","0310_fuzz","0311_fuzz","0317_fuzz","0318_fuzz"],
     "RF_Door_Lock": ["0308_fuzz","0310_fuzz","0311_fuzz","0317_fuzz","0318_fuzz"],
     "Thermostat": ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
 }
@@ -27,8 +27,8 @@ adapter_folder ={
     "Soldering_Iron": ["0416_fuzz"],
     "Steering_Control": ["0301_fuzz","0307_fuzz","0303_fuzz","0309_fuzz","0305_fuzz"],
     "XML_Parser": ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
-    "uEmu.GPSTracker" : ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
-    "uEmu.3Dprinter" : ["0308_fuzz","0317_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
+    "GPSTracker" : ["0308_fuzz","0309_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
+    "3Dprinter" : ["0308_fuzz","0317_fuzz","0310_fuzz","0311_fuzz","0318_fuzz"],
     "RF_Door_Lock": ["0318_fuzz","0315_fuzz","0313_fuzz","0311_fuzz","0318_fuzz"],
     "Thermostat": ["0308_fuzz","0309_fuzz","0317_fuzz","0311_fuzz","0318_fuzz"],
 }
@@ -47,6 +47,6 @@ firmware_crashpc = {"CVE-2021-3329":["af74"],
                     "plc":["80008c2", "8000a5a","8000ae4","8000978"],
                     "Heat_Press":["8040c"],
                     "Gateway":["8006b20","8006096","8002fc6","8004f40","8008774"],
-                    "uEmu.3Dprinter":["2000057c"],
-                    "uEmu.GPSTracker":["84415","83e07","80a35","83d87","83c11","80f64"]
+                    "3Dprinter":["2000057c"],
+                    "GPSTracker":["84415","83e07","80a35","83d87","83c11","80f64"]
                     }
