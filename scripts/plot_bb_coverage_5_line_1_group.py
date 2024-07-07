@@ -48,7 +48,7 @@ def plot_median_and_range(ax, data, color, label, marker):
 # Create a figure with a sub-plot for each firmware name in each group
 num_plots = sum(len(firmwares) for firmwares in groups_and_firmwares.values())
 fig, axs = plt.subplots(1, num_plots, figsize=(4 * num_plots, 4))
-plt.tight_layout(rect=[0, 0, 1, 0.85])
+plt.tight_layout(rect=[0.02, 0.04, 1, 0.85])
 
 plot_index = 0
 for group_name, firmware_names in groups_and_firmwares.items():
@@ -114,6 +114,8 @@ for text in legend.get_texts():
     if 'F²IDE' in text.get_text():
         text.set_fontstyle('italic')
         text.set_weight('bold')
+# fig.text(0.5, 0.02, 'Time (hh:mm)', ha='center', va='center', fontsize=16, fontweight='bold')
+# fig.text(0.01, 0.5, '#BBs Covered', ha='center', va='center', rotation='vertical', fontsize=16, fontweight='bold')
 plot_file_path = os.path.join(graph_save_directory, 'comparison_plot_combined.png')
 plt.savefig(plot_file_path, format='png', dpi=300)
 print(f'Combined plot saved to {plot_file_path}')

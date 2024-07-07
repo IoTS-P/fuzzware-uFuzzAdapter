@@ -1,7 +1,7 @@
 import re,os
 
 # 输入和输出文件路径
-input_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/month6_original/utasker_MODBUS/group_0/0702_fuzz/logs/pipeline.log'
+input_file_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/LiteOS_IoT/fuzzware-project/logs/pipeline.log'
 output_file_path = os.path.join(os.path.dirname(input_file_path), 'new_basic_blocks.log')
 
 # 正则表达式来匹配 "New basic block" 行并提取数值部分

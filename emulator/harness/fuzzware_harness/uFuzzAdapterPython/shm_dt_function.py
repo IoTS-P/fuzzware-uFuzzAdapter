@@ -110,7 +110,7 @@ def hook_fuzzware_bugs(uc):
     # on_basic_block(uc,cve3329.call_on_CVE_2021_3329)
     # on_basic_block(uc,cve3330.call_on_CVE_2021_3330)
     # on_basic_block(uc,cve10064.call_on_CVE_2020_10064)
-    on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
+    # on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
     # on_basic_block(uc,cve10066.call_on_CVE_2020_10066)
     # heat_press.hook_heat_press_words(uc)
     # plc.hook_plc_words(uc)

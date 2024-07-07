@@ -1,6 +1,6 @@
 # 定义输入文件和输出文件的路径
-file1_path = '/home/n0vic3/fuzzers/fuzzware/examples/month6_original/CVE-2023-00000_0/0618_fuzz/logs/new_basic_blocks.log'
-file2_path = '/home/n0vic3/fuzzers/fuzzware-examples/month6_adapter/CVE-2023-00000_1/0618_fuzz/logs/new_basic_blocks.log'
+file1_path = '/home/n0vic3/fuzzers/fuzzware/examples/uEmu/LiteOS_IoT/fuzzware-project/logs/new_basic_blocks.log'
+file2_path = '/home/n0vic3/fuzzers/fuzzware-examples/uEmu/LiteOS_IoT/group_0/0706_fuzz/logs/new_basic_blocks.log'
 output_path = '/tmp/missing_basic_blocks.txt'
 
 # 读取文件中的基本块地址

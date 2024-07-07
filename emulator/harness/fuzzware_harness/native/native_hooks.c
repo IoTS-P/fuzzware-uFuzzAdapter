@@ -309,13 +309,13 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
   printf("[NATIVE FUZZ] Requiring %d fuzz bytes\n", size);
   fflush(stdout);
 #endif
-#ifdef MYDEBUG
-char mybuf[100];
-uint32_t myipsr = 0;
-uc_reg_read(uc, UC_ARM_REG_IPSR, &myipsr);
-sprintf(mybuf, "myipsr = %x\n", myipsr);
-my_debug_log(mybuf);
-#endif
+// #ifdef MYDEBUG
+// char mybuf[100];
+// uint32_t myipsr = 0;
+// uc_reg_read(uc, UC_ARM_REG_IPSR, &myipsr);
+// sprintf(mybuf, "myipsr = %x\n", myipsr);
+// my_debug_log(mybuf);
+// #endif
 
   // Deal with copying over the (remaining) fuzzing bytes
   if (size && fuzz_cursor + size <= fuzz_size) {
