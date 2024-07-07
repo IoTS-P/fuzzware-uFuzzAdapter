@@ -1,7 +1,7 @@
 import json
 # map
 fucntion_times = {}
-addr_times = {0x8001c76:0,0x8001c82:0,0x8001bf0:0}
+addr_times = {0x8001c82:0,0x8001bf0:0}
 from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 from ...globs import uc
 # Create a reverse mapping of function addresses to function names

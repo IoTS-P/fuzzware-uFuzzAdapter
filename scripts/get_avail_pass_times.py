@@ -82,7 +82,7 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
     tasks_nums = len(tasks)
     # 使用进程池批量处理任务
-    with Pool(processes=100) as pool:
+    with Pool(processes=32) as pool:
         crash_timing_worker_results = pool.starmap(process_path, tasks)
         
 

@@ -6,22 +6,31 @@ from multiprocessing import Pool
 # Provided real crash address
 firmware_name = "CVE-2020-10065"
 firmware_name += ""
-time_list = ["0421"]
-ADAPTER = True
+time_list = ["0421","0422","0423"]
+ADAPTER = False
 FORCE_GENSTATS = True
+DATA_PATH = True
+PROCESSORS = 64
+
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
-    home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
-    group_name = "other_target_mmio_seedbin"
+    if DATA_PATH:
+        home_path = "/data/fuzzware_tmp_dir/adapter"
+    else:
+        home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
+    group_name = "other_target"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
-    home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
-    group_name = "month6_original"
+    if DATA_PATH:
+        home_path = "/data/fuzzware_tmp_dir/original"
+    else:
+        home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
+    group_name = "other_target_mmio_seedbin"
 
 def is_real_crash(output):
     cve_result = []
     seen_cves = set()
-    print(output)
+    # print(output)
     for line in output.split('\n'):
         if "Heureka" in line:
             cve = line.split(' ')[-1]
@@ -68,7 +77,7 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
 
     # Use a process pool to process tasks in batches
-    with Pool(processes=32) as pool:  # Set the number of processes based on CPU cores
+    with Pool(processes=PROCESSORS) as pool:  # Set the number of processes based on CPU cores
         crash_timing_worker_results = pool.starmap(process_path, tasks)
 
     # Collecting results
