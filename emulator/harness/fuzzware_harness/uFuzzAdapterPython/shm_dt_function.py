@@ -110,7 +110,7 @@ def hook_fuzzware_bugs(uc):
     # on_basic_block(uc,cve3329.call_on_CVE_2021_3329)
     # on_basic_block(uc,cve3330.call_on_CVE_2021_3330)
     # on_basic_block(uc,cve10064.call_on_CVE_2020_10064)
-    on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
+    # on_basic_block(uc,cve10065.call_on_CVE_2020_10065)
     # on_basic_block(uc,cve10066.call_on_CVE_2020_10066)
     # heat_press.hook_heat_press_words(uc)
     # plc.hook_plc_words(uc)
@@ -118,6 +118,7 @@ def hook_fuzzware_bugs(uc):
     # heat_press.hook_heat_press_addr(uc)
     # uc.hook_add(UC_HOOK_BLOCK,soldering_iron_idle,0x8006a68-1,0x8006a68|1)
     # gateway.hook_gateway_addr(uc)
+    on_basic_block(uc,gateway.hook_gateway_bug)
     # cve10064.avail_div_allfunc(uc)
     # solderring_iron.avail_div_allfunc(uc)
     

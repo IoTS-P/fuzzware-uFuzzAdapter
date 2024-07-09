@@ -4,12 +4,12 @@ from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 
 # Provided real crash address
-firmware_name = "CVE-2020-10065"
+firmware_name = "Gateway"
 firmware_name += ""
-time_list = ["0421","0422","0423"]
-ADAPTER = False
+time_list = ["0302","0305","0308","0309","0310"]
+ADAPTER = True
 FORCE_GENSTATS = True
-DATA_PATH = True
+DATA_PATH = False
 PROCESSORS = 64
 
 if ADAPTER:
@@ -18,7 +18,7 @@ if ADAPTER:
         home_path = "/data/fuzzware_tmp_dir/adapter"
     else:
         home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
-    group_name = "other_target"
+    group_name = "P2IM"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     if DATA_PATH:
@@ -140,19 +140,34 @@ def post_exec_pushplus(title, content):
 
 if __name__ == '__main__':
     sum_results = {}
-    for group_index in range(5):  # Loop through group_0 to group_4
-        for one_time in time_list:
-            new_file_path = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
-            if not os.path.exists(os.path.join(new_file_path, "stats", "true_crash.txt")) or FORCE_GENSTATS:
-                results = get_results(new_file_path)
-                print(results)
-                sum_results[one_time] = results
-            else:
-                with open(os.path.join(new_file_path, "stats", "true_crash.txt"), 'r') as file:
-                    lines = file.readlines()
-                print(f"new_file_path: {new_file_path}")
-                print(lines[0].strip("\n"))
-                print(lines[4])
-                print("--------------------------------------------------------------------------------")
+    for one_time in time_list:
+        base_path_no_group = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
+        # print(base_path_no_group)
+        if os.path.exists(base_path_no_group):
+            results = get_results(base_path_no_group)
+            print(results)
+            sum_results[one_time] = results
+        else:
+            for group_index in range(5):  # Loop through group_0 to group_4
+                base_path_with_group = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
+                # print(base_path_with_group)
+                if os.path.exists(base_path_with_group):
+                    results = get_results(base_path_with_group)
+                    print(results)
+                    sum_results[one_time] = results
+    # for group_index in range(5):  # Loop through group_0 to group_4
+    #     for one_time in time_list:
+    #         new_file_path = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
+    #         if not os.path.exists(os.path.join(new_file_path, "stats", "true_crash.txt")) or FORCE_GENSTATS:
+    #             results = get_results(new_file_path)
+    #             print(results)
+    #             sum_results[one_time] = results
+    #         else:
+    #             with open(os.path.join(new_file_path, "stats", "true_crash.txt"), 'r') as file:
+    #                 lines = file.readlines()
+    #             print(f"new_file_path: {new_file_path}")
+    #             print(lines[0].strip("\n"))
+    #             print(lines[4])
+    #             print("--------------------------------------------------------------------------------")
     print("all results: ", sum_results)
     post_exec_pushplus("hook_fuzzware_bugs_deal.py", "all results: sum_results")

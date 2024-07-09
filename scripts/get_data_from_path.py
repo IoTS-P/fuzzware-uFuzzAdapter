@@ -2,8 +2,8 @@ import re
 import os
 import subprocess
 
-firmware_name = "CVE-2021-3322"
-time_list = ["0404","0405","0406","0408","0409","0412","0415","0416","0419"]
+firmware_name = "CVE-2023-00000"
+time_list = ["0707"]
 ADAPTER = False
 GET_CRASH_TYPE = False
 DATA_PATH = True
@@ -14,14 +14,14 @@ if ADAPTER:
         home_path = "/data/fuzzware_tmp_dir/adapter"
     else:
         home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
-    group_name = "other_target"
+    group_name = "month6_adapter"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     if DATA_PATH:
         home_path = "/data/fuzzware_tmp_dir/original"
     else:
         home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
-    group_name = "other_target_mmio_seedbin"
+    group_name = "month6_original"
 
 def extract_coverage_data(log_path):
     with open(log_path, 'r') as file:
@@ -72,7 +72,7 @@ def process_fuzzing_data(base_path):
         print(f"Crash type: {crash_type}")
 
     print(f"base_path: {base_path}")
-    # print(f"Basic blocks: {basic_blocks}")
+    print(f"Basic blocks: {basic_blocks}")
     # print(f"Coverage percentage: {coverage_percentage}%")
     # print(f"First crash time: {first_crash_time}")
     print(f"Unique crashes: {unique_crashes}")
@@ -83,11 +83,12 @@ def process_fuzzing_data(base_path):
 if __name__ == "__main__":
     for one_time in time_list:
         base_path_no_group = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
-        print(base_path_no_group)
+        # print(base_path_no_group)
         if os.path.exists(base_path_no_group):
             process_fuzzing_data(base_path_no_group)
         else:
             for group_index in range(5):  # Loop through group_0 to group_4
                 base_path_with_group = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
+                # print(base_path_with_group)
                 if os.path.exists(base_path_with_group):
                     process_fuzzing_data(base_path_with_group)

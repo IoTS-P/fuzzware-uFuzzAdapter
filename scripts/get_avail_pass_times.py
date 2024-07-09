@@ -4,23 +4,23 @@
 import os, json,subprocess
 from multiprocessing import Pool,Value
 import ctypes
-
+from plot_bb_config import *
 # 你提供的真实 crash 地址
-firmware_name = "Soldering_Iron"
+firmware_name = "Gateway"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0301","0302","0303","0304","0305","0307","0308","0309","0310",
 #,"0218","0219","0220","0224","0301","0302","0303","0304","0305","0414","0416"
-time_list = ["0218","0219","0220","0224","0216"]
+time_list = ["0708"]
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
-ADAPTER = False
-FORCE_GENSTATS = False
+ADAPTER = True
+FORCE_GENSTATS = True
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "P2IM"
+    group_name= "month7_adapter"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
@@ -82,7 +82,7 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
     tasks_nums = len(tasks)
     # 使用进程池批量处理任务
-    with Pool(processes=32) as pool:
+    with Pool(processes=64) as pool:
         crash_timing_worker_results = pool.starmap(process_path, tasks)
         
 
@@ -123,11 +123,18 @@ def post_exec_pushplus(title,content):
 
 if __name__ == '__main__':
     sum_results = {}
-    
     for one_time in time_list:
-        new_file_path = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
-        if not os.path.exists(os.path.join(new_file_path, "stats", "avail_times.txt")) or FORCE_GENSTATS:
-            results = get_results(new_file_path)
+        base_path_no_group = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
+        # print(base_path_no_group)
+        if os.path.exists(base_path_no_group):
+            results = get_results(base_path_no_group)
             sum_results[one_time] = results
+        else:
+            for group_index in range(5):  # Loop through group_0 to group_4
+                base_path_with_group = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
+                # print(base_path_with_group)
+                if os.path.exists(base_path_with_group):
+                   results = get_results(base_path_with_group)
+                   sum_results[one_time] = results
     print("All results: ", sum_results)
     post_exec_pushplus(f"Function call counts for {firmware_name}", sum_results)
