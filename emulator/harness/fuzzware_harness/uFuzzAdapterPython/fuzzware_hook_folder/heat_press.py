@@ -19,7 +19,7 @@ import json
 fucntion_times = {}
 for word in heat_press_words:
     fucntion_times[word] = 0
-addr_times = {0x8043a:0,0x80470:0}
+addr_times = {0x80444:0,0x80470:0,0x801c8:0,0x801d2:0}
 
 from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 from ...globs import uc

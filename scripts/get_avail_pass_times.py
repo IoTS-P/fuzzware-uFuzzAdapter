@@ -10,7 +10,12 @@ firmware_name = "Gateway"
 # real_crash_list = firmware_crashpc[firmware_name]
 #"0401","0402","0403","0404","0405","0406","0408","0409" "0328","0330","0411","0412","0413","0420","0301","0302","0303","0304","0305","0307","0308","0309","0310",
 #,"0218","0219","0220","0224","0301","0302","0303","0304","0305","0414","0416"
-time_list = ["0708"]
+time_list =  [
+    "0307",
+    #"0830","0831"
+]
+
+
 #/home/n0vic3/fuzzers/fuzzware-examples/other_target/CVE-2021-3319/0415_fuzz
 # _inter or _idle
 
@@ -20,7 +25,7 @@ if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
     firmware_name += ""
-    group_name= "month7_adapter"
+    group_name= "P2IM"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
@@ -82,7 +87,7 @@ def get_results(file_path):
         tasks.append((crash_path, original_file_path, fuzzware_version))
     tasks_nums = len(tasks)
     # 使用进程池批量处理任务
-    with Pool(processes=64) as pool:
+    with Pool(processes=88) as pool:
         crash_timing_worker_results = pool.starmap(process_path, tasks)
         
 
@@ -101,17 +106,16 @@ def get_results(file_path):
 
     # Write results to file
     results_path = os.path.join(original_file_path, 'function_call_counts.json')
+    tmp_dict = dict()
     with open(results_path, 'w') as file:
-        json.dump(function_call_counts, file, indent=4)
+        for key, value in function_call_counts.items():
+            # hex(int) to str
+            tmp_dict[hex(int(key))] = value
+        json.dump(tmp_dict, file, indent=4)
         all_avail_function_times = 0
-        for value in function_call_counts.values():
-            all_avail_function_times += value
-        
-        print(f"all_avail_function_times: {all_avail_function_times}")
-        json.dump(f"all_avail_function_times: {all_avail_function_times}", file, indent=4)
     print('Function call counts written to:', results_path)
 
-    return function_call_counts
+    return tmp_dict
 
 def post_exec_pushplus(title,content):
 
@@ -125,14 +129,13 @@ if __name__ == '__main__':
     sum_results = {}
     for one_time in time_list:
         base_path_no_group = f'{home_path}/{group_name}/{firmware_name}/{one_time}_fuzz'
-        # print(base_path_no_group)
         if os.path.exists(base_path_no_group):
             results = get_results(base_path_no_group)
             sum_results[one_time] = results
         else:
             for group_index in range(5):  # Loop through group_0 to group_4
                 base_path_with_group = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
-                # print(base_path_with_group)
+                print(base_path_with_group)
                 if os.path.exists(base_path_with_group):
                    results = get_results(base_path_with_group)
                    sum_results[one_time] = results

@@ -3,10 +3,10 @@ import os
 import subprocess
 
 firmware_name = "CVE-2023-00000"
-time_list = ["0707"]
+time_list = ["0709"]
 ADAPTER = False
 GET_CRASH_TYPE = False
-DATA_PATH = True
+DATA_PATH = False
 
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
@@ -89,6 +89,6 @@ if __name__ == "__main__":
         else:
             for group_index in range(5):  # Loop through group_0 to group_4
                 base_path_with_group = f'{home_path}/{group_name}/{firmware_name}/group_{group_index}/{one_time}_fuzz'
-                # print(base_path_with_group)
+                print(base_path_with_group)
                 if os.path.exists(base_path_with_group):
                     process_fuzzing_data(base_path_with_group)

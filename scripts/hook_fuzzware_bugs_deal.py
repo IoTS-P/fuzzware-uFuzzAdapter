@@ -4,13 +4,13 @@ from plot_bb_config import firmware_crashpc
 from multiprocessing import Pool
 
 # Provided real crash address
-firmware_name = "Gateway"
+firmware_name = "CVE-2023-00000"
 firmware_name += ""
-time_list = ["0302","0305","0308","0309","0310"]
+time_list = ["0707"]
 ADAPTER = True
 FORCE_GENSTATS = True
 DATA_PATH = False
-PROCESSORS = 64
+PROCESSORS = 100
 
 if ADAPTER:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware_ufuzzadapter/bin/fuzzware"
@@ -18,14 +18,14 @@ if ADAPTER:
         home_path = "/data/fuzzware_tmp_dir/adapter"
     else:
         home_path = "/home/n0vic3/fuzzers/fuzzware-examples"
-    group_name = "P2IM"
+    group_name = "month6_adapter"
 else:
     fuzzware_version = "/home/n0vic3/.virtualenvs/fuzzware/bin/fuzzware"
     if DATA_PATH:
         home_path = "/data/fuzzware_tmp_dir/original"
     else:
         home_path = "/home/n0vic3/fuzzers/fuzzware/examples"
-    group_name = "other_target_mmio_seedbin"
+    group_name = "month6_original"
 
 def is_real_crash(output):
     cve_result = []

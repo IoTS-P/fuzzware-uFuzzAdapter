@@ -14,6 +14,7 @@ def read_from_shm_json(config,c_lib,vtor):
         for file in files:
             if file.endswith(".json"):
                 shm_file = os.path.join(root, file)
+                # print(shm_file)
                 break
     
     emulation_handler_serialized_data = json.load(open(shm_file, "r"))
@@ -51,7 +52,6 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
         else:
             my_debug_log("fill_data_tracker_array success")
     for i, get_dt in enumerate(irq_dt_set):
-        
         dt = convert_to_ctypes(get_dt)
         res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count,vtor)
         if res != 0:
@@ -95,6 +95,8 @@ def _hook_irq_function(uc, address, size, user_data):
     '''
     my_debug_log(f"irq function: {address:#x}")
     my_debug_log(f"irq function: {size:#x}")
+    ipsr = uc.reg_read(UC_ARM_REG_IPSR)
+    print(f"irq function: {ipsr:#x}")
     
 def hook_fuzzware_bugs(uc):
     from .fuzzware_hook_folder import cve3319,cve3320,cve3321,cve3322,cve3323,cve3329,cve3330,cve10064,cve10065,cve10066,heat_press,plc,gateway,solderring_iron
@@ -117,10 +119,11 @@ def hook_fuzzware_bugs(uc):
     # plc.hook_plc_addr(uc)
     # heat_press.hook_heat_press_addr(uc)
     # uc.hook_add(UC_HOOK_BLOCK,soldering_iron_idle,0x8006a68-1,0x8006a68|1)
-    # gateway.hook_gateway_addr(uc)
-    on_basic_block(uc,gateway.hook_gateway_bug)
+    gateway.hook_gateway_addr(uc)
+    # on_basic_block(uc,gateway.hook_gateway_bug)
     # cve10064.avail_div_allfunc(uc)
     # solderring_iron.avail_div_allfunc(uc)
+    # on_basic_block(uc,_hook_irq_function)
     
     pass
 

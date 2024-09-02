@@ -25,7 +25,7 @@ plc_words = [
 fucntion_times = {}
 for word in plc_words:
     fucntion_times[word] = 0
-addr_times = {0x8000b62:0,0x8000b4a:0}
+addr_times = {0x8000b56:0,0x8000b62:0,0x80006c6:0,0x80006d2:0}
 from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 from ...globs import uc
 # Create a reverse mapping of function addresses to function names

@@ -8,7 +8,7 @@ from plot_bb_config import *
 # Define your group names and corresponding firmware names
 groups_and_firmwares = {
     'P2IM': ['PLC', 'Gateway', 'Heat_Press', "Console", "Steering_Control"],
-    'uEmu': ['GPSTracker', '3Dprinter'],
+    'uEmu': ['GPSTracker', '3Dprinter',"LiteOS_IoT"],
     # Add more groups and firmware names as needed
 }
 
