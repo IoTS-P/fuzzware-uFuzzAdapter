@@ -30,6 +30,8 @@ target (uc_mem_write)
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <time.h>
 
 // 0. Constants
 // ~10 MB of preallocated fuzzing buffer size
@@ -55,6 +57,7 @@ target (uc_mem_write)
 #define CPUID_ADDR 0xE000ED00
 const int CPUID_CORTEX_M4 = 0x410fc240;
 const int CPUID_CORTEX_M3 = 0x410fc230;
+static int cnt_group_store = 10;
 
 uc_err mem_errors[] = {
     UC_ERR_READ_UNMAPPED,  UC_ERR_READ_PROT,  UC_ERR_READ_UNALIGNED,
@@ -173,13 +176,25 @@ void do_exit(uc_engine *uc, uc_err err) {
   }
 }
 
-void hook_block_debug(uc_engine *uc, uint64_t address, uint32_t size,
-                      void *user_data) {
-  uint32_t lr;
-  uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+void hook_block_debug(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
+    uint32_t lr;
+    uint32_t r0;
+    static int cnt_store = 1001;
+    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+    uc_reg_read(uc, UC_ARM_REG_R0, &r0);
 
-  printf("Basic Block: addr= 0x%016lx (lr=0x%x)\n", address, lr);
-  fflush(stdout);
+    printf("Basic Block: addr= 0x%016lx (lr=0x%x)\n", address, lr);
+    printf("$$$r0: (R0=0x%x)\n",r0);
+
+    if (address== 529382){
+        cnt_store--;
+        cnt_group_store--;
+        printf("***cnt_store: %d\n",cnt_store);
+        printf("***cnt_group_store: %d\n",cnt_group_store);
+        if (cnt_store == 0)do_exit(uc, UC_ERR_OK);
+    }
+
+    fflush(stdout);
 }
 
 void hook_debug_mem_access(uc_engine *uc, uc_mem_type type, uint64_t address,
@@ -1530,6 +1545,9 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
+  // printf("fuzz[100]: %d\n", (int)fuzz[100]);
+  // static int index = 100;
+  // srand((int)fuzz[index++]);
   my_debug_log("irq_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
   if (dt->irq_pc < 256) {
@@ -1545,13 +1563,43 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   sprintf(buf, "irq_num = %d\n", dt->irq_num);
   my_debug_log(buf);
   #endif
+
+  static int irq_cnt = 0;
+
+  // static int arr[1010];
+  // static int index = 0;
+
   if (!dt->interrupt_times) {
-    dt->interrupt_times = get_current_partition(dt);
+    // dt->interrupt_times = get_current_partition(dt);
+    //把每次dt->interrupt_times的数据按索引顺序存放到一个数组里
+    // srand(time(NULL));
+    // dt->interrupt_times = rand() % 501;
+
+    // arr[index++] = dt->interrupt_times;
+
+    dt->interrupt_times = 10;
+    // printf("***new interrupt times = %d\n", dt->interrupt_times);
     // printf("after getinterrupt_times = %d\n", dt->interrupt_times);
     return UC_ERR_OK;
   }
-  nvic_set_pending(uc, dt->irq_num, false);
-  dt->interrupt_times--;
+  irq_cnt++;
+  printf("@@@Current irq_cnt = %d\n", irq_cnt);
+  if (cnt_group_store > 0){
+    nvic_set_pending(uc, dt->irq_num, false);
+    // dt->interrupt_times--;
+    printf("@@@Current irq_times = %d\n", dt->interrupt_times);
+  }
+  else {
+    // cnt_group_store = rand() % 1001;
+    cnt_group_store = get_current_partition(dt);
+    // cnt_group_store = 50;
+  }
+  
+  // printf("***arr = ");
+  // for (int i = 0; i < index; i++) {
+    // printf("%d,",arr[i]);
+  // }
+  
   // printf("interrupt_times = %d\n", dt->interrupt_times);
   // if (read_times == global_partion  && global_partion != 0) {
   //   printf("[Adapter]: Hit enough times %d\n", read_times);

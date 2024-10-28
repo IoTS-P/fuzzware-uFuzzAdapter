@@ -56,6 +56,7 @@ void hook_syst_mmio_write(uc_engine *uc, uc_mem_type type,
     uint32_t access_offset = addr - SysTick_BASE;
 
     #ifdef DEBUG_SYSTICK
+    
     printf("[SysTick] hook_syst_mmio_write: Write to %08lx, value: %08lx\n", addr, value);
     fflush(stdout);
     #endif

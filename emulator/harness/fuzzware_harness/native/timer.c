@@ -114,6 +114,7 @@ static inline void sync_timers() {
         int64_t elapsed = timers.cur_interval - timers.cur_countdown;
 
         #ifdef DEBUG_TIMER
+        
         printf("[sync_timers] timers.cur_interval: %lu, timers.cur_countdown: %lu -> elapsed: %ld\n", timers.cur_interval, timers.cur_countdown, elapsed); fflush(NULL);
         #endif
 

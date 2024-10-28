@@ -956,6 +956,15 @@ static void nvic_exception_return_hook(uc_engine *uc, uint64_t address, uint32_t
     #endif
 
     ExceptionReturn(uc, address);
+    static uint32_t cnt = 1;
+    if(cnt--){
+        printf("!!!nvic.enabled_irqs = %d\n",nvic.enabled_irqs[0]);
+        // nvic_set_pending(uc, nvic.enabled_irqs[0], false);
+    }
+    else{
+        cnt = 1;
+    }
+    printf("!!cnt = %d\n",cnt);
 
     #ifdef DEBUG_NVIC
     uint32_t pc;

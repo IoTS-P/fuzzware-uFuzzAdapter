@@ -7,11 +7,12 @@
 #include "unicorn/unicorn.h"
 // #define DEBUG
 // #define DEBUG_STATE_RESTORE
-// #define DEBUG_SYSTICK
+#define DEBUG_SYSTICK
 // #define DEBUG_TIMER
+
 // #define DEBUG_INJECT_TIMER
 // #define DEBUG_TIMER_TICKS
-// #define DEBUG_NVIC
+// #define DEBUG_NVIC 
 // #define DEBUG_INTERRUPT_TRIGGERS
 // #define DEBUG_STATE_SNAPSHOTTING
 

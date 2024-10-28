@@ -108,7 +108,7 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
                 break;
             default:
                 trigger->irq = 0;
-            }
+            } 
 
         if(trigger->trigger_mode == IRQ_TRIGGER_MODE_TIME_FUZZED) {
             uint8_t time_fuzzer_choice;
@@ -172,7 +172,7 @@ uc_hook add_interrupt_trigger(uc_engine *uc, uint64_t addr, uint32_t irq, uint32
         if(every_nth_tick == 0) {
             every_nth_tick = IRQ_DEFAULT_TIMER_INTERVAL;
         }
-
+        
         trigger->timer_id = add_timer(get_timer_scale()*every_nth_tick, interrupt_trigger_timer_cb, trigger, TIMER_IRQ_NOT_USED);
         start_timer(uc, trigger->timer_id);
     } else {
