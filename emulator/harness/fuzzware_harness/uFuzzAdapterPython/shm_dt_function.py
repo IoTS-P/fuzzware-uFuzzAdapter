@@ -10,13 +10,16 @@ def read_from_shm_json(config,c_lib,vtor):
         # read from shared memory file
         # os.walk get include shared_memory.txt
     shm_file = None
+    flag = False
     for root, dirs, files in os.walk(os.path.dirname(config["binary_file"])):
         for file in files:
             if file.endswith(".json"):
                 shm_file = os.path.join(root, file)
+                flag = True
                 # print(shm_file)
                 break
-    
+        if flag:
+            break
     emulation_handler_serialized_data = json.load(open(shm_file, "r"))
     irq_dt_set = emulation_handler_serialized_data["irq_dt_set"]
     main_dt_set = emulation_handler_serialized_data["main_dt_set"]
@@ -28,18 +31,19 @@ def read_from_shm_json(config,c_lib,vtor):
 def convert_to_ctypes(dt_object):
     from .data_tracker import StructDataTracker
     dt = StructDataTracker()
-    dt.dr=0 if dt_object['dr'] is None else dt_object['dr']
-    dt.callread_pc=0 if dt_object['callread_pc'] is None else dt_object['callread_pc']
-    dt.read_pc=0 if dt_object['read_pc'] is None else dt_object['read_pc']
-    dt.buffer_addr=0 if dt_object['buffer_addr']  is None else dt_object['buffer_addr']
-    dt.irq_pc=0 if dt_object['irq_pc'] is None else dt_object['irq_pc']
-    dt.avail_pc=0 if dt_object['avail_pc'] is None else dt_object['avail_pc']
-    dt.rx_head=0 if dt_object['rx_head'] is None else dt_object['rx_head']
-    dt.rx_tail=0 if dt_object['rx_tail'] is None else dt_object['rx_tail']
-    dt.buffer_len=0 if dt_object['buffer_len'] is None else dt_object['buffer_len']
-    dt.buffer_min_len=0 if dt_object['buffer_min_len'] is None else dt_object['buffer_min_len']
-    dt.consume_count=0 if dt_object['consume_count'] is None else dt_object['consume_count']
+    dt.dr = dt_object.get('dr', 0)
+    dt.callread_pc = dt_object.get('callread_pc', 0)
+    dt.read_pc = dt_object.get('read_pc', 0)
+    dt.buffer_addr = dt_object.get('buffer_addr', 0)
+    dt.irq_pc = dt_object.get('irq_pc', 0)
+    dt.avail_pc = dt_object.get('avail_pc', 0)
+    dt.rx_head = dt_object.get('rx_head', 0)
+    dt.rx_tail = dt_object.get('rx_tail', 0)
+    dt.buffer_len = dt_object.get('buffer_len', 0)
+    dt.buffer_min_len = dt_object.get('buffer_min_len', 0)
+    dt.consume_count = dt_object.get('consume_count', 0)
     return dt
+
 
 def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
     for i, get_dt in enumerate(main_dt_set):

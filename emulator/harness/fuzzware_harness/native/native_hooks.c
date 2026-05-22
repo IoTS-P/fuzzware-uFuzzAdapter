@@ -57,7 +57,7 @@ target (uc_mem_write)
 #define CPUID_ADDR 0xE000ED00
 const int CPUID_CORTEX_M4 = 0x410fc240;
 const int CPUID_CORTEX_M3 = 0x410fc230;
-static int cnt_group_store = 10;
+static int cnt_group_store = 100;
 
 uc_err mem_errors[] = {
     UC_ERR_READ_UNMAPPED,  UC_ERR_READ_PROT,  UC_ERR_READ_UNALIGNED,
@@ -179,21 +179,23 @@ void do_exit(uc_engine *uc, uc_err err) {
 void hook_block_debug(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
     uint32_t lr;
     uint32_t r0;
-    static int cnt_store = 1001;
+    static int cnt_store = 101;
     uc_reg_read(uc, UC_ARM_REG_LR, &lr);
     uc_reg_read(uc, UC_ARM_REG_R0, &r0);
 
     printf("Basic Block: addr= 0x%016lx (lr=0x%x)\n", address, lr);
     printf("$$$r0: (R0=0x%x)\n",r0);
 
-    if (address== 529382){
+    if (address== 134222232){
         cnt_store--;
         cnt_group_store--;
         printf("***cnt_store: %d\n",cnt_store);
         printf("***cnt_group_store: %d\n",cnt_group_store);
         if (cnt_store == 0)do_exit(uc, UC_ERR_OK);
     }
-
+    // if (address== 528){
+    //   do_exit(uc, UC_ERR_OK);
+    // }
     fflush(stdout);
 }
 
@@ -1591,7 +1593,8 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   }
   else {
     // cnt_group_store = rand() % 1001;
-    cnt_group_store = get_current_partition(dt);
+    // cnt_group_store = get_current_partition(dt);
+    cnt_group_store = 100;
     // cnt_group_store = 50;
   }
   
@@ -1702,7 +1705,6 @@ int random_split_algorithm(int index, int ceil, int threshold) {
   if (start == end) {
     return remaining_sum + index;
   }
-
   int random_value = start + seed % (end - start);
   return random_value + index;
 }
