@@ -165,12 +165,21 @@ if num_plots == 0:
 # Adjust figsize based on grid size (original width/height * num cols/rows)
 fig_width = 4 * ncols   # 4 units width per plot * 6 columns
 fig_height = 3 * nrows  # 3 units height per plot * 3 rows
-fig, axs = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height), squeeze=False) # squeeze=False ensures axs is 2D
+fig, axs = plt.subplots(nrows, ncols, figsize=(20, 8)) # squeeze=False ensures axs is 2D
 
 # Adjust layout - use original tight_layout first, then adjust spacing
 # plt.tight_layout(rect=[0.02, 0.04, 1, 0.85]) # Keep original rect for legend space
-plt.subplots_adjust(wspace=0.4, hspace=0.5)  # Add horizontal and vertical spacing
+plt.subplots_adjust(        
+    left=0.07,    
+    right=0.96,   
+    bottom=0.15,  # Reduced to give more space to the plots
+    top=0.85,     # Increased to give more space to the plots
+    wspace=0.45,   # Adjusted for better horizontal spacing
+    hspace=0.7)  # Add horizontal and vertical spacing
 
+# Add shared axis labels for the whole figure
+fig.text(0.02, 0.5, '#BBs Covered', va='center', rotation='vertical', fontsize=20, fontweight='bold')
+fig.text(0.5, 0.04, 'Duration(h)', ha='center', fontsize=20, fontweight='bold')
 
 plot_index = 0
 for group_name, firmware_names in groups_and_firmwares.items():
@@ -234,11 +243,11 @@ for group_name, firmware_names in groups_and_firmwares.items():
         current_ax.xaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=5, integer=True)) # Removed steps arg
         current_ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3, integer=True)) # Ensure y-axis integer ticks
 
-        current_ax.set_title(graph_title, fontsize=16) # Adjusted fontsize slightly for grid
+        current_ax.set_title(graph_title, fontsize=17, pad=10) # Adjusted fontsize slightly for grid
         current_ax.grid(True)
         current_ax.spines['top'].set_visible(False)
         current_ax.spines['right'].set_visible(False)
-        current_ax.tick_params(axis='both', labelsize=12) # Adjusted fontsize slightly
+        current_ax.tick_params(axis='both', labelsize=14) # Adjusted fontsize slightly
         # --- End original styling ---
 
         plot_index += 1
@@ -299,13 +308,15 @@ legend = fig.legend(handles=legend_handles_final,
                    labels=legend_labels_final,
                    loc='upper center',
                    ncol=3, # <-- 根据图例项数调整列数，例如改为3
-                   bbox_to_anchor=(0.5, 0.98), # Adjust vertical position slightly higher for grid
-                   fontsize=20,
+                   bbox_to_anchor=(0.5, 0.985), # Adjust vertical position slightly higher for grid
+                   fontsize=14,
                    shadow=False,
                    frameon=True,
                    fancybox=True,
                    draggable=True,
-                   handler_map={LegendObject: HandlerLegendObject() if not handles else {}} # Use handler only if using LegendObject
+                   handler_map={LegendObject: HandlerLegendObject() if not handles else {}}, # Use handler only if using LegendObject
+                    handletextpad=0.4,
+                    borderpad=0.4
                   )
 
 # Apply original font styling to legend text
@@ -315,7 +326,7 @@ for text in legend.get_texts():
         text.set_weight('bold')
 
 # --- Save Figure ---
-plot_file_path = os.path.join(graph_save_directory, 'comparison_plot_combined_grid.png')
+plot_file_path = os.path.join(graph_save_directory, 'comparison_plot_combined_grid_new.png')
 # Use tight bbox for saving as in original
 plt.savefig(plot_file_path, format='png', dpi=300, bbox_inches='tight', pad_inches=0.05)
 print(f'Combined grid plot saved to {plot_file_path}')

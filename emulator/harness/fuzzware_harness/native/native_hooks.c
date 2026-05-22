@@ -13,6 +13,9 @@ target (uc_mem_write)
 #include "khash.h"
 #include "state_snapshotting.h"
 #include "timer.h"
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "uc_snapshot.h"
 #include "ufuzz_adapter/data_tracker.h"
 #include "util.h"
@@ -57,7 +60,15 @@ target (uc_mem_write)
 #define CPUID_ADDR 0xE000ED00
 const int CPUID_CORTEX_M4 = 0x410fc240;
 const int CPUID_CORTEX_M3 = 0x410fc230;
-static int cnt_group_store = 100;
+
+// static int irq_cnt = 1001;
+// static int cnt_group_store = 1001;
+// int flag = 0;
+// int read_count = 0;
+// int avali_count = 0;
+// int write_count = 0;
+// int tk_interrupt = 0;
+// static bool exit_code = false;
 
 uc_err mem_errors[] = {
     UC_ERR_READ_UNMAPPED,  UC_ERR_READ_PROT,  UC_ERR_READ_UNALIGNED,
@@ -126,18 +137,97 @@ DataTracker *irq_dt_array = NULL;
 
 short main_dt_array_index = 0;
 short irq_dt_array_index = 0;
-int *random_split = NULL;
-size_t random_split_size = 0;
+uint32_t delivery_X = 0;       // X = 全局最小交付块大小
+uint32_t delivery_N = 0;       // N = 估算的交付点数量
+uint32_t delivery_LenR = 0;    // LenR = 剩余需求预算
+int32_t delivery_LenFI = 0;     // LenFI = 剩余额外预算（可为负）
 uint32_t global_partion = 0;
 uint32_t read_times = 0;
 uint32_t vtor_num = 0;
 uint32_t stop_count = 1;
-short skip_interrupt = 0;
 
 bool adapter_can_exit = false;
 // 定义哈希表的数据类型
 KHASH_MAP_INIT_INT(dr_dt, DataTracker *)
 khash_t(dr_dt) *hash_table = NULL;
+
+// Channel discovery globals
+DataTracker *pending_dt_array = NULL;
+short pending_dt_array_index = 0;
+
+uint32_t g_all_dr_addrs[MAX_DR_ADDRS] = {0};
+int g_num_dr_addrs = 0;
+uint32_t g_all_sr_addrs[MAX_SR_ADDRS] = {0};
+int g_num_sr_addrs = 0;
+
+bool g_in_discovery_mode = false;
+uint32_t g_discovery_dr = 0;
+uint32_t g_discovery_taint = 0;
+uint32_t g_discovery_irq_pc = 0;
+uint32_t g_discovery_addr_list[MAX_DISCOVERY_ADDRS] = {0};
+int g_discovery_addr_count = 0;
+uint32_t g_discovery_buffer_addr = 0;
+uc_hook g_discovery_mem_read_hook = 0;
+uc_hook g_discovery_mem_write_hook = 0;
+bool g_discovery_occurred = false;
+char g_json_file_path[512] = {0};
+
+// Phase 0: buffer-addr discovery (taint tracking, no refill)
+// After buffer_addr found → parallel fill + read_pc capture:
+uint32_t g_discovery_read_pc = 0;
+uint32_t g_discovery_callread_pc = 0;
+uc_hook g_discovery_buffer_read_hook = 0;
+bool g_read_pc_done = false;
+
+// Buffer fill: active chain tracking + manual IRQ
+bool g_buffer_fill_active = false;
+bool g_buffer_fill_done = false;
+uint32_t g_fill_irq_num = 0;        // resolved IRQ number for nvic_set_pending
+
+// Chain tracking (consecutive +1 writes from buffer_addr)
+uint32_t g_chain_min = 0;
+uint32_t g_chain_max = 0;
+int g_chain_extend_count = 0;
+int g_consecutive_miss = 0;
+
+// Hard timeout fallback
+int g_chain_idle_bb = 0;
+uc_hook g_chain_block_hook = 0;
+
+// buffer_min_len inference state machine (semu-fuzz: hook_func_got_buffer_min_len)
+static int g_bufmin_state = 0;       // 0=IDLE, 1=INFERRING, 2=DONE
+static int g_bufmin_count = 0;
+static int g_bufmin_dt_idx = -1;     // which DT is being learned
+static uint32_t g_bufmin_irq = 0;
+static uc_hook g_bufmin_avail_hook = 0;
+static uc_hook g_bufmin_finish_hook = 0;
+static uc_hook g_bufmin_read_hook = 0;
+static uint32_t g_bufmin_read_off = 0;
+
+// Forward declarations for buffer_min_len hooks
+static void hook_bufmin_avail(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bufmin_finish(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bufmin_read_ptr(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data);
+
+// Ghidra static analysis callback
+static void *g_ghidra_callback = NULL;
+uc_hook g_avail_hook_handles[MAX_AVAIL_HOOKS] = {0};
+int g_num_avail_hooks = 0;
+uc_hook g_pending_hook_handles[MAX_PENDING_HOOKS] = {0};
+int g_num_pending_hooks = 0;
+
+// 前向声明
+void init_delivery_budget(void);
+int compute_delivery_size(DataTracker *dt);
+bool is_irq_managed_by_dt(int irq_num);
+static void finalize_discovery(uc_engine *uc);
+static void try_finalize(uc_engine *uc);
+void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data);
+static void hook_chain_block(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data);
+static bool chain_try_extend(uint32_t addr);
 
 static void determine_input_mode() {
   char *id_str;
@@ -164,7 +254,31 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
-  printf("read times: %d\n", read_times);
+  printf("[EXIT] cursor=%ld/%ld fuzz_size=%ld read_times=%d\n",
+         fuzz_cursor, fuzz_size, fuzz_size, read_times);
+
+  // Clean up discovery hooks if still active
+  if (g_in_discovery_mode) {
+    if (g_discovery_mem_read_hook) {
+      uc_hook_del(uc, g_discovery_mem_read_hook);
+      g_discovery_mem_read_hook = 0;
+    }
+    if (g_discovery_mem_write_hook) {
+      uc_hook_del(uc, g_discovery_mem_write_hook);
+      g_discovery_mem_write_hook = 0;
+    }
+    if (g_discovery_buffer_read_hook) {
+      uc_hook_del(uc, g_discovery_buffer_read_hook);
+      g_discovery_buffer_read_hook = 0;
+    }
+    if (g_chain_block_hook) {
+      uc_hook_del(uc, g_chain_block_hook);
+      g_chain_block_hook = 0;
+    }
+    g_in_discovery_mode = false;
+    g_buffer_fill_active = false;
+  }
+
   reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
@@ -179,20 +293,41 @@ void do_exit(uc_engine *uc, uc_err err) {
 void hook_block_debug(uc_engine *uc, uint64_t address, uint32_t size, void *user_data) {
     uint32_t lr;
     uint32_t r0;
-    static int cnt_store = 101;
+    // static int cnt_store = 101;
     uc_reg_read(uc, UC_ARM_REG_LR, &lr);
     uc_reg_read(uc, UC_ARM_REG_R0, &r0);
 
     printf("Basic Block: addr= 0x%016lx (lr=0x%x)\n", address, lr);
     printf("$$$r0: (R0=0x%x)\n",r0);
 
-    if (address== 134222232){
-        cnt_store--;
-        cnt_group_store--;
-        printf("***cnt_store: %d\n",cnt_store);
-        printf("***cnt_group_store: %d\n",cnt_group_store);
-        if (cnt_store == 0)do_exit(uc, UC_ERR_OK);
-    }
+    // if (address == 525764)do_exit(uc, UC_ERR_OK);
+
+    // if (address== 529382){
+    //     cnt_group_store--;
+    //     // printf("***cnt_store: %d\n",irq_cnt);
+    //     printf("***cnt_group_store: %d\n",cnt_group_store);
+    //     if (cnt_group_store == 0){
+    //       // exit_code = true;
+    //       printf("ready to exit\n");
+    //       do_exit(uc, UC_ERR_OK);
+    //     }
+    // }
+
+    // if (address == 529400) {
+    //   flag = 1;
+    // }
+
+    // if (address == 529462) {
+    //   read_count++;
+    // }
+
+    // if (address == 529416) {
+    //   avali_count++;
+    // }
+
+    // if (address == 529528) {
+    //   write_count++;
+    // }
     // if (address== 528){
     //   do_exit(uc, UC_ERR_OK);
     // }
@@ -281,7 +416,7 @@ int uc_err_to_sig(uc_err error) {
   }
 }
 
-void force_crash(uc_engine *uc, uc_err error) { do_exit(uc, error); }
+void force_crash(uc_engine *uc, uc_err error) { printf("there is force crash.\n");do_exit(uc, error); }
 
 void hook_block_exit_at(uc_engine *uc, uint64_t address, uint32_t size,
                         void *user_data) {
@@ -291,6 +426,7 @@ void hook_block_exit_at(uc_engine *uc, uint64_t address, uint32_t size,
              native_hooks_state.curr_exit_at_hit_num);
       fflush(stdout);
     }
+    printf("hook_block_exit_at called\n");
     do_exit(uc, UC_ERR_OK);
   }
 }
@@ -363,37 +499,21 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
 
     return get_fuzz(uc, buf, size);
   } else {
-    // if (do_print_exit_info) {
-    //   puts("\n>>> Ran out of fuzz\n");
-    // }
-    // // has read DR in available interrupt
-    // if (read_times > global_partion) {
-    //   // if still fuzz drained
-    //   if (adapter_can_exit) {
-    //     adapter_can_exit = false;
-    //     my_debug_log(
-    //         "[Adapter]: exit fuzz because has used fuzz input another
-    //         times\n");
-    //     do_exit(uc, UC_ERR_OK);
-    //   }
-
-    //   // reset the cursor
-    //   fuzz_cursor = 0;
-    //   my_debug_log("[Adapter]: fuzz drained first time \n");
-    //   adapter_can_exit = true;
-    //   printf("Refill the last round input with ptr %ld\n", fuzz_cursor);
-    //   return get_fuzz(uc, buf, size);
-    // } else // the fuzz has been used not in adapter (such as interrupt )
-    // {
-    //   if (fuzz_size == 0)
-    //     do_exit(uc, UC_ERR_OK);
-    //   return 1;
-    // }
+    // 部分耗尽：还有剩余数据但不够请求大小，返回可用的
+    if (size && fuzz_cursor < fuzz_size) {
+      uint32_t remaining = fuzz_size - fuzz_cursor;
+      memcpy(buf, &fuzz[fuzz_cursor], remaining);
+      fuzz_cursor += remaining;
+      reload_timer(fuzz_consumption_timer_id);
+      return 0;
+    }
+    // 真正耗尽
     if (do_print_exit_info) {
       puts("\n>>> Ran out of fuzz\n");
+      do_exit(uc, UC_ERR_OK);
     }
-
-    do_exit(uc, UC_ERR_OK);
+    // printf("get_fuzz called do_exit\n");
+    // do_exit(uc, UC_ERR_OK);
     return 1;
   }
 }
@@ -450,6 +570,7 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
 
       return res;
     }
+    printf("get_fuzz_ptr called do_exit\n");
     do_exit(uc, UC_ERR_OK);
     return NULL;
   }
@@ -507,13 +628,21 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type, uint64_t addr, int size,
 #endif
 
   uint64_t val = 0;
+
+  // 兜底：DT FIFO 优先，get_fuzz 后备
+  if (hash_table != NULL) {
+    khint_t k = kh_get(dr_dt, hash_table, addr);
+    if (k != kh_end(hash_table)) {
+      DataTracker *dt = kh_value(hash_table, k);
+      if (!fifo_get_fuzz(uc, dt, (uint8_t *)&val, size)) {
+        goto write_val;
+      }
+    }
+  }
   if (get_fuzz(uc, (uint8_t *)&val, size)) {
     return;
   }
-#ifdef DEBUG
-  printf(", value: 0x%lx\n", val);
-  fflush(stdout);
-#endif
+write_val:
   uc_mem_write(uc, addr, (uint8_t *)&val, size);
 
 out:
@@ -680,29 +809,33 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
       (struct bitextract_mmio_model_config *)user_data;
   uint64_t result_val = 0;
   uint64_t fuzzer_val = 0;
-  // 查找元素
-  khint_t k = kh_get(dr_dt, hash_table, addr);
-  if (k != kh_end(hash_table)) {
-    //   // 找到了元素
-    DataTracker *dt = kh_value(hash_table, k);
-    if (fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
-      return;
+
+  // 数据源选择：DT FIFO 优先，get_fuzz 后备
+  if (hash_table != NULL) {
+    khint_t k = kh_get(dr_dt, hash_table, addr);
+    if (k != kh_end(hash_table)) {
+      DataTracker *dt = kh_value(hash_table, k);
+      if (!fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+        goto apply_model;
+      }
     }
   }
-
   if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
     return;
+  }
+
+apply_model:
+  result_val = fuzzer_val << config->left_shift;
 
 #ifdef DEBUG
-
-    printf("[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] "
-           "from %d "
-           "byte input: %lx\n",
-           pc, addr, result_val, config->byte_size, fuzzer_val);
-    fflush(stdout);
+  uint32_t _pc;
+  uc_reg_read(uc, UC_ARM_REG_PC, &_pc);
+  printf("[0x%08x] Native Bitextract MMIO handler: [0x%08lx] = [0x%lx] "
+         "from %d byte input: %lx\n",
+         _pc, addr, result_val, config->byte_size, fuzzer_val);
+  fflush(stdout);
 #endif
-  }
-  result_val = fuzzer_val << config->left_shift;
+
   uc_mem_write(uc, addr, &result_val, size);
 }
 
@@ -720,10 +853,20 @@ void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   // #endif
 
   if (config->num_vals > 1) {
+    // 数据源选择：DT FIFO 优先，get_fuzz 后备
+    if (hash_table != NULL) {
+      khint_t k = kh_get(dr_dt, hash_table, addr);
+      if (k != kh_end(hash_table)) {
+        DataTracker *dt = kh_value(hash_table, k);
+        if (!fifo_get_fuzz(uc, dt, (uint8_t *)&fuzzer_val, 1)) {
+          goto apply_value_set;
+        }
+      }
+    }
     if (get_fuzz(uc, (uint8_t *)&fuzzer_val, 1)) {
       return;
     }
-
+apply_value_set:
     result_val = config->values[fuzzer_val % config->num_vals];
   } else {
     result_val = config->values[0];
@@ -913,6 +1056,7 @@ uc_err load_fuzz(const char *path) {
     // shm inputs: <size_u32> contents ...
     fuzz_size = (*(uint32_t *)fuzz) + sizeof(uint32_t);
     fuzz_cursor = sizeof(uint32_t);
+    init_delivery_budget();
     return 0;
   }
 
@@ -974,6 +1118,7 @@ uc_err load_fuzz(const char *path) {
     return -1;
   }
 
+  init_delivery_budget();
   return 0;
 }
 
@@ -1092,6 +1237,7 @@ void fuzz_consumption_timeout_cb(uc_engine *uc, uint32_t id, void *user_data) {
     printf("Fuzzing input not consumed for %ld basic blocks, exiting\n",
            fuzz_consumption_timeout);
   }
+  printf("fuzz_consumption_timeout_cb called, do_exit\n");
   do_exit(uc, UC_ERR_OK);
 }
 
@@ -1100,7 +1246,6 @@ void test_timeout_cb(uc_engine *uc, uint32_t id, void *user_data) {
   if (!is_discovery_child) {
     uint32_t pc;
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-    printf("Test timer triggered at pc 0x%08x\n", pc);
     fflush(NULL);
   }
 }
@@ -1113,6 +1258,7 @@ void instr_limit_timeout_cb(uc_engine *uc, uint32_t id, void *user_data) {
     printf("Ran into instruction limit of %lu at 0x%08x - exiting\n",
            get_timer_reload_val(instr_limit_timer_id), pc);
   }
+  printf("instr_limit_timeout_cb called, do_exit\n");
   do_exit(uc, UC_ERR_OK);
 }
 
@@ -1357,6 +1503,9 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
     uc_reg_read(uc, UC_ARM_REG_PC, &pc);
     trigger_snapshotting(uc);
 
+    // Initial per-round setup: read JSON, build DT arrays, hooks, and pending DRs
+    per_round_reload(uc);
+
     // AFL-compatible Forkserver loop
     child_pid = getpid();
     int count = 0;
@@ -1399,10 +1548,28 @@ uc_err emulate(uc_engine *uc, char *p_input_path, char *prefix_input_path) {
       }
 
       restore_snapshot(uc);
+
+      // Ghidra daemon may have patched JSON → trigger reload
+      {
+        struct stat st;
+        if (stat("/tmp/ghidra_done", &st) == 0) {
+          unlink("/tmp/ghidra_done");
+          g_discovery_occurred = true;
+        }
+      }
+
+      // Channel discovery: if a new DT was discovered this round, reload config
+      if (g_discovery_occurred) {
+        per_round_reload(uc);
+        g_discovery_occurred = false;
+      }
     }
   } else {
     puts("Running without a fork server");
     duplicate_exit = false;
+
+    // Initial per-round setup for single-run mode
+    per_round_reload(uc);
 
     // Not running under fork server
     int sig = run_single(uc);
@@ -1429,13 +1596,17 @@ void initialize_data_tracker_arrays() {
   printf("Initializing data tracker arrays\n");
   main_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
   irq_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
+  pending_dt_array = malloc(MAX_PENDING_DRS * sizeof(DataTracker));
   // Check for NULL if allocation fails and handle it appropriately
-  if (!main_dt_array || !irq_dt_array) {
+  if (!main_dt_array || !irq_dt_array || !pending_dt_array) {
     // Handle memory allocation error
     // For example, you could print an error message and exit
     fprintf(stderr, "Failed to allocate memory for data tracker arrays\n");
     exit(EXIT_FAILURE);
   }
+  memset(main_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
+  memset(irq_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
+  memset(pending_dt_array, 0, MAX_PENDING_DRS * sizeof(DataTracker));
   printf("Data tracker arrays initialized\n");
 }
 
@@ -1510,6 +1681,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
 }
 
 int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
+  g_num_avail_hooks = 0;
   for (int i = 0; i < main_dt_array_index; i++) {
     if (main_dt_array[i].avail_pc != 0) {
       uc_hook avail_hook;
@@ -1520,18 +1692,26 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
         perror("Could not add avail hook\n");
         return -1;
       }
+      if (g_num_avail_hooks < MAX_AVAIL_HOOKS) {
+        g_avail_hook_handles[g_num_avail_hooks++] = avail_hook;
+      }
     }
   }
   for (int i = 0; i < irq_dt_array_index; i++) {
     if (irq_dt_array[i].avail_pc != 0) {
       uc_hook irq_hook;
       printf("avail_pc = %x\n", irq_dt_array[i].avail_pc);
+      FILE *fp = fopen("/tmp/ghidra_reload.log", "a");
+      if (fp) { fprintf(fp, "avail_pc=0x%x\n", irq_dt_array[i].avail_pc); fclose(fp); }
       int res = uc_hook_add(uc, &irq_hook, UC_HOOK_CODE, irq_avail_hook_handler,
                             &irq_dt_array[i], irq_dt_array[i].avail_pc,
                             irq_dt_array[i].avail_pc);
       if (res != UC_ERR_OK) {
         perror("Could not add avail hook\n");
         return -1;
+      }
+      if (g_num_avail_hooks < MAX_AVAIL_HOOKS) {
+        g_avail_hook_handles[g_num_avail_hooks++] = irq_hook;
       }
     }
   }
@@ -1542,172 +1722,139 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data) {
   read_times++;
+  // DataTracker *dt = (DataTracker *)user_data;
+
+  // // 主逻辑读：FIFO 空则装填，无中断触发
+  // if (dt->fifo_head == dt->fifo_tail) {
+  //   int len_si = compute_delivery_size(dt);
+  //   if (len_si == 0) {
+  //     printf("***main dt budget exhausted\n");
+  //     return UC_ERR_OK;
+  //   }
+  //   fill_data(dt, len_si, uc);
+  //   delivery_LenFI = delivery_LenFI - len_si + delivery_X;
+  //   if (delivery_LenFI < 0) delivery_LenFI = 0;
+  //   delivery_LenR  = delivery_LenR - delivery_X;
+  //   if (delivery_LenR == 0) delivery_X = 0;
+  //   printf("***main fill fifo: %d bytes, LenFI=%d, LenR=%d\n",
+  //          len_si, delivery_LenFI, delivery_LenR);
+  // }
   return UC_ERR_OK;
 }
 
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
-  // printf("fuzz[100]: %d\n", (int)fuzz[100]);
-  // static int index = 100;
-  // srand((int)fuzz[index++]);
   my_debug_log("irq_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
+
+  // ---- 解析 IRQ 号 ----
   if (dt->irq_pc < 256) {
     dt->irq_num = dt->irq_pc;
-  } else{
-    dt->irq_num =
-        (dt->irq_num == 0) ? get_match_irq_num(uc, dt->irq_pc) : dt->irq_num;
+  } else if (dt->irq_pc == 256) {
+    return UC_ERR_OK;
+  } else {
+    // 每次重新查询，避免 NVIC 未启用时缓存 0
+    dt->irq_num = get_match_irq_num(uc, dt->irq_pc);
+    if (dt->irq_num == 0) {
+      return UC_ERR_OK;  // 中断尚未启用，等下次
+    }
   }
-  skip_interrupt = dt->irq_num;
-  #ifdef MYDEBUG
-  char buf[100];
-  
-  sprintf(buf, "irq_num = %d\n", dt->irq_num);
-  my_debug_log(buf);
-  #endif
 
-  static int irq_cnt = 0;
-
-  // static int arr[1010];
-  // static int index = 0;
-
+  // ---- FIFO 空则装填 ----
   if (!dt->interrupt_times) {
-    // dt->interrupt_times = get_current_partition(dt);
-    //把每次dt->interrupt_times的数据按索引顺序存放到一个数组里
-    // srand(time(NULL));
-    // dt->interrupt_times = rand() % 501;
-
-    // arr[index++] = dt->interrupt_times;
-
-    dt->interrupt_times = 10;
-    // printf("***new interrupt times = %d\n", dt->interrupt_times);
-    // printf("after getinterrupt_times = %d\n", dt->interrupt_times);
+    int len_si = compute_delivery_size(dt);
+    if (len_si == 0) {
+      printf("***irq dt budget exhausted\n");
+      return UC_ERR_OK;
+    }
+    fill_data(dt, len_si, uc);
+    delivery_LenFI = delivery_LenFI - len_si + delivery_X;
+    if (delivery_LenFI < 0) delivery_LenFI = 0;
+    delivery_LenR  = delivery_LenR - delivery_X;
+    if (delivery_LenR == 0) delivery_X = 0;
+    printf("***fill fifo: %d bytes, LenFI=%d, LenR=%d\n",
+           len_si, delivery_LenFI, delivery_LenR);
+    dt->interrupt_times = len_si;
     return UC_ERR_OK;
   }
-  irq_cnt++;
-  printf("@@@Current irq_cnt = %d\n", irq_cnt);
-  if (cnt_group_store > 0){
-    nvic_set_pending(uc, dt->irq_num, false);
-    // dt->interrupt_times--;
-    printf("@@@Current irq_times = %d\n", dt->interrupt_times);
-  }
-  else {
-    // cnt_group_store = rand() % 1001;
-    // cnt_group_store = get_current_partition(dt);
-    cnt_group_store = 100;
-    // cnt_group_store = 50;
-  }
-  
-  // printf("***arr = ");
-  // for (int i = 0; i < index; i++) {
-    // printf("%d,",arr[i]);
-  // }
-  
-  // printf("interrupt_times = %d\n", dt->interrupt_times);
-  // if (read_times == global_partion  && global_partion != 0) {
-  //   printf("[Adapter]: Hit enough times %d\n", read_times);
-  //   read_times = 0;
-  //   adapter_can_exit = true;
-  // } else if (!read_times) // start of one round
-  // {
-  //   // refill success
-  //   if (adapter_can_exit) {
-  //     if (do_print_exit_info) {
-  //       my_debug_log("[Adapter]: exit fuzz because has step into available "
-  //                    "point after one round\n");
-  //     }
-  //     adapter_can_exit = false;
-  //     puts("\n>>> Ran out of fuzz with refill \n");
-  //     do_exit(uc, UC_ERR_OK);
-  //   }
-  // if (dt->fifo_head == dt->fifo_tail) {
-  //   int local_partion = 0;
-  //   local_partion = get_current_partition(dt);
-  //   fill_data(dt, local_partion, uc);
 
-  //   return UC_ERR_OK;
-  // }
-  //   nvic_set_pending(uc, dt->irq_num, false);
-  //   dt->interrupt_times++;
-  // } else // in one round
-  // {
-  //   if (adapter_can_exit) {
-  //     if (do_print_exit_info) {
-  //       my_debug_log("[Adapter]: exit fuzz because has step into available "
-  //                    "point after one round\n");
-  //     }
-  //     adapter_can_exit = false;
-  //     puts("\n>>> Ran out of fuzz with refill \n");
-  //     do_exit(uc, UC_ERR_OK);
-  //   }
-  //   if (dt->fifo_head == dt->fifo_tail) {
-  //     int local_partion = 0;
-  //     local_partion = get_current_partition(dt);
-  //     stop_count = 1;
-  //     fill_data(dt, local_partion, uc);
-  //     return UC_ERR_OK;
-  //   }
-  //   nvic_set_pending(uc, dt->irq_num, false);
-  //   dt->interrupt_times++;
-  // }
+  // ---- 触发中断 ----
+  nvic_set_pending(uc, dt->irq_num, false);
+  dt->interrupt_times--;
   return UC_ERR_OK;
 }
 
-int get_current_partition(DataTracker *dt) {
-  // Generate the latest random partition
-  if(dt->buffer_len == dt->buffer_min_len){
-    return dt->buffer_len;
+// ====== 替换 get_current_partition/random_split 系列函数 ======
+
+// 初始化交付预算（ 行 1-13）：估算 N、X、LenR
+void init_delivery_budget(void) {
+  delivery_N = irq_dt_array_index;
+  if (delivery_N == 0) {
+    delivery_X = 1;
+    delivery_LenR = 0;
+    return;
   }
-  random_split_data_input(dt);
-  int partition = 0;
-  if (random_split_size == 1) {
-    partition = random_split[0];
-  } else if (random_split_size > 1) {
-    partition = random_split[random_split_size - 1] -
-                random_split[random_split_size - 2];
+  delivery_X = 0xFFFFFFFF;
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    uint32_t low = irq_dt_array[i].buffer_min_len > 0
+                       ? irq_dt_array[i].buffer_min_len : 1;
+    if (low < delivery_X) delivery_X = low;
   }
-  return partition;
+  if (delivery_X == 0xFFFFFFFF || delivery_X == 0) delivery_X = 1;
+  delivery_LenR = delivery_N * delivery_X;
+  while (fuzz_size < delivery_LenR && delivery_N > 1) {
+    delivery_N--;
+    delivery_LenR = delivery_N * delivery_X;
+  }
+  delivery_LenFI = fuzz_size - delivery_LenR;
+  printf("[INIT_BUDGET] N=%d X=%d LenR=%d LenFI=%d fuzz_size=%ld\n",
+         delivery_N, delivery_X, delivery_LenR, delivery_LenFI, fuzz_size);
 }
 
-int random_split_data_input(DataTracker *dt) {
-  if (random_split_size == 0) {
-    random_split = malloc(sizeof(int));
-    random_split[0] = 0;
-    random_split_size = 1;
-  }
+// 计算本次投递长度 LenSI（ 行 17-26）
+int compute_delivery_size(DataTracker *dt) {
+  int32_t len_fi = delivery_LenFI;                                    // LenFI
+  uint32_t X      = delivery_X > 0 ? delivery_X : 1;
+  uint32_t low_p  = dt->buffer_min_len > 0 ? dt->buffer_min_len : 1; // LOWp
+  if (low_p > 1 && low_p < 4) low_p = 4;  // 原版阈值 clamp
+  uint32_t up_p   = dt->buffer_len;                                   // UPp
 
-  int index = random_split[random_split_size - 1];
+  //  行 14
+  if (len_fi + delivery_LenR == 0) return 0;
+  if (up_p == low_p) return up_p;
 
-  if (index >= fuzz_size) {
-    return -1;
+  //  行 17: Δ = LenFI + X - LOWp
+  int delta = (int)(len_fi + X) - (int)low_p;
+  int len_si;
+  if (delta <= 0) {
+    //  行 18-20: LenSI = LOWp, 补零 |Δ| 字节
+    len_si = (int)low_p;
+    printf("[DELIVERY] Δ=%d≤0 → LenSI=LOWp=%d (LenFI=%d X=%d LOWp=%d)\n",
+           delta, len_si, len_fi, X, low_p);
+  } else {
+    //  行 23-24: LenSI = Rand(FI[Pos]) mod t + LOWp
+    uint32_t upper = (len_fi + X < up_p) ? (len_fi + X) : up_p;
+    int t = (int)upper - (int)low_p;
+    uint32_t seed = (fuzz_cursor < fuzz_size) ? fuzz[fuzz_cursor] : 0;
+    len_si = (seed % t) + low_p;
+    printf("[DELIVERY] Δ=%d>0 → LenSI=%d range=[%d,%d] seed=fuzz[%ld]=%u "
+           "(LenFI=%d X=%d UPp=%d)\n",
+           delta, len_si, low_p, upper, fuzz_cursor, seed,
+           len_fi, X, up_p);
   }
-
-  if (dt->buffer_len) {
-    int threshold = 1;
-    if (dt->buffer_min_len != 0 && dt->buffer_min_len > 1) {
-      threshold = (dt->buffer_min_len > 4) ? dt->buffer_min_len : 4;
-    }
-    // Resize the random_split array to accommodate the new element
-    random_split = realloc(random_split, (random_split_size + 1) * sizeof(int));
-    random_split[random_split_size] =
-        random_split_algorithm(index, dt->buffer_len, threshold);
-    random_split_size++;
-  }
-  return 0;
+  return len_si;
 }
 
-int random_split_algorithm(int index, int ceil, int threshold) {
-  int remaining_sum = fuzz_size - random_split[random_split_size - 1];
-  int seed = (int)fuzz[index];
-  int start = threshold;
-  int end = (remaining_sum < ceil) ? remaining_sum : ceil;
-
-  if (start == end) {
-    return remaining_sum + index;
+// 检查某个 IRQ 是否正被任意 DataTracker 管理
+bool is_irq_managed_by_dt(int irq_num) {
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    if (irq_dt_array[i].irq_num == irq_num)
+      return true;
   }
-  int random_value = start + seed % (end - start);
-  return random_value + index;
+  return false;
 }
+
+// ====== 替换结束 ======
 
 // 用于检测是否存在头尾指针并且判断是否相等
 bool is_head_tail_equal(void *uc, DataTracker *dt) {
@@ -1741,51 +1888,44 @@ short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr) {
   return offset;
 }
 
-// Function to fill data
+// Function to fill data from fuzz input into DataTracker's FIFO
+// Fills exactly container_len bytes, zero-padding if fuzz is exhausted
 int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
-  // Check if there is any data left to process
-  size_t remain_data_len = fuzz_size - fuzz_cursor;
-  if (remain_data_len <= 0 || container_len <= 0) {
+  size_t remain = (fuzz_size > fuzz_cursor) ? (fuzz_size - fuzz_cursor) : 0;
+
+  if (remain <= 0) {
+    printf("fill data called\n");
+    // do_exit(uc, UC_ERR_OK);
     return 0;
   }
 
-  // Determine the length of data needed
-  int need_input_len =
-      (remain_data_len < container_len) ? remain_data_len : container_len;
-  size_t buffer_min_len = dt->buffer_min_len > 1 ? dt->buffer_min_len : 1;
+  int actual_len = (remain < container_len) ? (int)remain : (int)container_len;
+  int padding    = (int)container_len - actual_len;
 
-  // Calculate padding length if needed
-  int padding_len = 0;
-  if (need_input_len < buffer_min_len) {
-    padding_len = buffer_min_len - need_input_len;
-    need_input_len = buffer_min_len; // Update need_input_len to include padding
+  printf("[FILL] dt→fifo[%d]B: actual=%dB from fuzz[%ld], pad=%dB, "
+         "cursor %ld→%ld\n",
+         (int)container_len, actual_len, fuzz_cursor, padding,
+         fuzz_cursor, fuzz_cursor + actual_len);
+
+  uint8_t data_input[container_len];
+  memset(data_input, 0, container_len);
+
+  if (actual_len > 0) {
+    memcpy(data_input, fuzz + fuzz_cursor, actual_len);
+    fuzz_cursor += actual_len;
   }
 
-  // Initialize data_input with zeros
-  uint8_t data_input[container_len];
-  memset(data_input, 1, container_len);
-
-  // Copy the actual data into data_input, up to need_input_len - padding_len
-  memcpy(data_input, fuzz + fuzz_cursor, need_input_len - padding_len);
-
-  // Update the fuzz_cursor position
-  fuzz_cursor += (need_input_len - padding_len);
-  // Write the data to the data register
-  int write_len = write_byte_to_data_reg(dt, data_input, need_input_len, uc);
+  int write_len = write_byte_to_data_reg(dt, data_input, container_len, uc);
   global_partion += write_len;
-  // Return the number of bytes written
   return write_len;
 }
 
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc) {
-
-  if (dt->fifo_head == dt->fifo_tail) {
-    memcpy(dt->fifo, data, len);
-    dt->fifo_head = len - 1;
-    dt->fifo_tail = 0;
-  }
-  return len;
+  memcpy(dt->fifo, data, len);                                                                                                                                                                                
+  dt->fifo_head = len;    // 修复：应该是 len 而非 len-1                                   
+  dt->fifo_tail = 0;                                                                                                                                                                                          
+  return len;     
 }
 
 void my_debug_log(const char *format) {
@@ -1811,29 +1951,35 @@ void my_debug_log(const char *format) {
 int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   int num_enabled = get_num_enabled();
   int irq_num = 0;
-  uint64_t irq_handler_memory_addr;
+  int best_irq = 0;
+  int best_diff = 0x7FFFFFFF;
+  // printf("[GET_IRQ] irq_pc=0x%x vtor=0x%x enabled=%d\n",
+  //        irq_pc, vtor_num, num_enabled);
   for (int i = 1; i <= num_enabled; i++) {
     irq_num = nth_enabled_irq_num(i);
-    irq_handler_memory_addr = vtor_num + irq_num * 4;
-    int irq_handler_memory_value;
-    uc_mem_read(uc, irq_handler_memory_addr, &irq_handler_memory_value,
-                sizeof(irq_handler_memory_value));
-    if (abs((int)(irq_handler_memory_value - irq_pc)) <= 4) {
+    uint64_t handler_addr = vtor_num + irq_num * 4;
+    int handler_val;
+    uc_mem_read(uc, handler_addr, &handler_val, sizeof(handler_val));
+    int diff = abs((int)(handler_val - (int)irq_pc));
+    // printf("[GET_IRQ]   i=%d irq=%d handler=0x%x diff=%d\n",
+    //        i, irq_num, handler_val, diff);
+    if (diff <= 4) {
+      // printf("[GET_IRQ] MATCH irq=%d\n", irq_num);
       return irq_num;
     }
+    if (diff < best_diff) {
+      best_diff = diff;
+      best_irq = irq_num;
+    }
   }
+  // printf("[GET_IRQ] no exact match, best irq=%d diff=%d\n", best_irq, best_diff);
   return 0;
 }
 
 void reset_datatrcker_and_global_vars() {
   global_partion = 0;
   read_times = 0;
-  if (random_split != NULL) {
-    free(random_split);
-    random_split = NULL; // 防止野指针
-    random_split_size = 0;
-  }
-  free(random_split);
+  delivery_LenFI = 0;
   for (int i = 0; i < main_dt_array_index; i++) {
     main_dt_array[i].fifo_head = 0;
     main_dt_array[i].fifo_tail = 0;
@@ -1842,6 +1988,12 @@ void reset_datatrcker_and_global_vars() {
     irq_dt_array[i].fifo_head = 0;
     irq_dt_array[i].fifo_tail = 0;
     irq_dt_array[i].interrupt_times = 0;
+  }
+  // Refill pending DT FIFOs each round (snapshot restore doesn't touch C heap)
+  for (int i = 0; i < pending_dt_array_index; i++) {
+    memset(pending_dt_array[i].fifo, 0xAA, 1);
+    pending_dt_array[i].fifo_head = 1;
+    pending_dt_array[i].fifo_tail = 0;
   }
 }
 
@@ -1856,24 +2008,1060 @@ int init_dr_dt_hash() {
   // kh_destroy(dr_dt, h);
 }
 
+// ====== Channel Discovery: Init-time Setup ======
+int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
+                     uint32_t *sr_addrs, int num_srs,
+                     const char *json_path, uint32_t vtor) {
+  vtor_num = vtor;
+  g_num_dr_addrs = (num_drs < MAX_DR_ADDRS) ? num_drs : MAX_DR_ADDRS;
+  memcpy(g_all_dr_addrs, dr_addrs, g_num_dr_addrs * sizeof(uint32_t));
+  g_num_sr_addrs = (num_srs < MAX_SR_ADDRS) ? num_srs : MAX_SR_ADDRS;
+  memcpy(g_all_sr_addrs, sr_addrs, g_num_sr_addrs * sizeof(uint32_t));
+  if (json_path && json_path[0]) {
+    strncpy(g_json_file_path, json_path, sizeof(g_json_file_path) - 1);
+  }
+
+  if (!pending_dt_array) {
+    pending_dt_array = calloc(MAX_PENDING_DRS, sizeof(DataTracker));
+  }
+
+  printf("[STORE_DR_SR] stored %d DRs, %d SRs, json=%s, vtor=0x%x\n",
+         g_num_dr_addrs, g_num_sr_addrs, g_json_file_path, vtor_num);
+  return 0;
+}
+
+// ====== Channel Discovery: Per-round Hook Management ======
+
+// Cleanup all avail and pending hooks from previous round
+void cleanup_avail_and_pending_hooks(uc_engine *uc) {
+  for (int i = 0; i < g_num_avail_hooks; i++) {
+    if (g_avail_hook_handles[i]) {
+      uc_hook_del(uc, g_avail_hook_handles[i]);
+      g_avail_hook_handles[i] = 0;
+    }
+  }
+  g_num_avail_hooks = 0;
+
+  for (int i = 0; i < g_num_pending_hooks; i++) {
+    if (g_pending_hook_handles[i]) {
+      uc_hook_del(uc, g_pending_hook_handles[i]);
+      g_pending_hook_handles[i] = 0;
+    }
+  }
+  g_num_pending_hooks = 0;
+
+  // Clean up any lingering discovery hooks
+  if (g_discovery_mem_read_hook) {
+    uc_hook_del(uc, g_discovery_mem_read_hook);
+    g_discovery_mem_read_hook = 0;
+  }
+  if (g_discovery_mem_write_hook) {
+    uc_hook_del(uc, g_discovery_mem_write_hook);
+    g_discovery_mem_write_hook = 0;
+  }
+  if (g_discovery_buffer_read_hook) {
+    uc_hook_del(uc, g_discovery_buffer_read_hook);
+    g_discovery_buffer_read_hook = 0;
+  }
+  if (g_chain_block_hook) {
+    uc_hook_del(uc, g_chain_block_hook);
+    g_chain_block_hook = 0;
+  }
+  g_in_discovery_mode = false;
+  g_buffer_fill_active = false;
+}
+
+// Reset all tracker state for re-population
+void reset_all_tracker_state(void) {
+  main_dt_array_index = 0;
+  irq_dt_array_index = 0;
+  pending_dt_array_index = 0;
+  memset(main_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
+  memset(irq_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
+  memset(pending_dt_array, 0, MAX_PENDING_DRS * sizeof(DataTracker));
+
+  // Clear hash table by re-creating it
+  if (hash_table) {
+    kh_destroy(dr_dt, hash_table);
+  }
+  hash_table = kh_init(dr_dt);
+
+  // Reset discovery state
+  g_in_discovery_mode = false;
+  g_discovery_dr = 0;
+  g_discovery_taint = 0;
+  g_discovery_irq_pc = 0;
+  g_discovery_addr_count = 0;
+  g_discovery_buffer_addr = 0;
+  g_discovery_mem_read_hook = 0;
+  g_discovery_mem_write_hook = 0;
+  g_discovery_occurred = false;
+
+  // Reset fill + read_pc state
+  g_discovery_read_pc = 0;
+  g_discovery_callread_pc = 0;
+  g_discovery_buffer_read_hook = 0;
+  g_read_pc_done = false;
+  g_buffer_fill_active = false;
+  g_buffer_fill_done = false;
+  g_fill_irq_num = 0;
+  g_chain_min = 0;
+  g_chain_max = 0;
+  g_chain_extend_count = 0;
+  g_consecutive_miss = 0;
+  g_chain_idle_bb = 0;
+  g_chain_block_hook = 0;
+  g_bufmin_state = 0;
+  g_bufmin_count = 0;
+  g_bufmin_avail_hook = 0;
+  g_bufmin_finish_hook = 0;
+  g_bufmin_read_hook = 0;
+
+  reset_datatrcker_and_global_vars();
+}
+
+// Minimal JSON integer/hex parser: extract value for a given key from a JSON object string
+// Returns 0 if not found
+static uint32_t json_extract_int(const char *json_obj, const char *key) {
+  char search[128];
+  snprintf(search, sizeof(search), "\"%s\":", key);
+  const char *pos = strstr(json_obj, search);
+  if (!pos) return 0;
+  pos += strlen(search);
+
+  // Skip whitespace
+  while (*pos == ' ' || *pos == '\t') pos++;
+
+  if (*pos == '"') {
+    // Hex string like "0x..."
+    pos++;
+    uint32_t val = 0;
+    if (strncmp(pos, "0x", 2) == 0) {
+      sscanf(pos, "%x", &val);
+    } else {
+      sscanf(pos, "%u", &val);
+    }
+    return val;
+  } else {
+    // Plain integer
+    int val = 0;
+    sscanf(pos, "%d", &val);
+    return (uint32_t)val;
+  }
+}
+
+// Reload DT arrays from JSON file
+void json_reload_dt_arrays(uc_engine *uc) {
+  if (g_json_file_path[0] == 0) {
+    printf("[JSON_RELOAD] No JSON path configured, skipping\n");
+    return;
+  }
+
+  FILE *fp = fopen(g_json_file_path, "r");
+  if (!fp) {
+    printf("[JSON_RELOAD] File not found: %s, starting fresh\n", g_json_file_path);
+    return;
+  }
+
+  fseek(fp, 0, SEEK_END);
+  long fsize = ftell(fp);
+  rewind(fp);
+  if (fsize <= 0 || fsize > 1048576) {  // max 1MB
+    fclose(fp);
+    return;
+  }
+
+  char *buf = malloc(fsize + 1);
+  if (!buf) { fclose(fp); return; }
+  fread(buf, 1, fsize, fp);
+  buf[fsize] = '\0';
+  fclose(fp);
+
+  // Parse irq_dt_set array
+  const char *irq_section = strstr(buf, "\"irq_dt_set\":");
+  if (irq_section) {
+    const char *p = strstr(irq_section, "[");
+    if (p) {
+      p++; // skip '['
+      while (*p) {
+        // Skip whitespace and stop if array ended
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == ']') break;
+        // Find next DT object
+        const char *obj_start = strstr(p, "{");
+        if (!obj_start) break;
+        const char *obj_end = strstr(obj_start, "}");
+        if (!obj_end) break;
+
+        // Extract fields
+        uint32_t dr = json_extract_int(obj_start, "dr");
+        if (dr == 0) { p = obj_end + 1; continue; }
+
+        uint32_t callread_pc = json_extract_int(obj_start, "callread_pc");
+        uint32_t read_pc     = json_extract_int(obj_start, "read_pc");
+        uint32_t buffer_addr = json_extract_int(obj_start, "buffer_addr");
+        uint32_t irq_pc      = json_extract_int(obj_start, "irq_pc");
+        uint32_t avail_pc    = json_extract_int(obj_start, "avail_pc");
+        uint32_t rx_head     = json_extract_int(obj_start, "rx_head");
+        uint32_t rx_tail     = json_extract_int(obj_start, "rx_tail");
+        short buffer_len     = (short)json_extract_int(obj_start, "buffer_len");
+        short buffer_min_len = (short)json_extract_int(obj_start, "buffer_min_len");
+        int consume_count    = (int)json_extract_int(obj_start, "consume_count");
+
+        printf("[JSON_RELOAD] irq_dt: dr=0x%x irq_pc=0x%x buf=0x%x avail=0x%x\n",
+               dr, irq_pc, buffer_addr, avail_pc);
+
+        fill_data_tracker_irq_dt_array(dr, callread_pc, read_pc, buffer_addr,
+                                       irq_pc, avail_pc, rx_head, rx_tail,
+                                       buffer_len, buffer_min_len, consume_count,
+                                       vtor_num);
+        // Extract per-DT consume_pc_set
+        {
+          const char *cp = strstr(obj_start, "\"consume_pc_set\":");
+          if (cp && cp < obj_end) {
+            const char *s = strstr(cp, "[");
+            const char *e = strstr(cp, "]");
+            if (s && e && e > s && e < obj_end) {
+              int n = e - s + 1;
+              if (n < 256) {
+                memcpy(irq_dt_array[irq_dt_array_index-1].consume_pcs, s, n);
+                irq_dt_array[irq_dt_array_index-1].consume_pcs[n] = 0;
+              }
+            }
+          }
+        }
+
+        p = obj_end + 1;
+        // Stop at array boundary: if ] appears before next {, we're done
+        const char *next_brace = strstr(p, "{");
+        const char *next_bracket = strstr(p, "]");
+        if (!next_brace || (next_bracket && next_bracket < next_brace)) break;
+      }
+    }
+  }
+
+  // Parse main_dt_set array
+  const char *main_section = strstr(buf, "\"main_dt_set\":");
+  if (main_section) {
+    const char *p = strstr(main_section, "[");
+    if (p) {
+      p++;
+      while (*p) {
+        // Skip whitespace and stop if array ended
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == ']') break;
+        const char *obj_start = strstr(p, "{");
+        if (!obj_start) break;
+        const char *obj_end = strstr(obj_start, "}");
+        if (!obj_end) break;
+
+        uint32_t dr = json_extract_int(obj_start, "dr");
+        if (dr == 0) { p = obj_end + 1; continue; }
+
+        uint32_t callread_pc = json_extract_int(obj_start, "callread_pc");
+        uint32_t read_pc     = json_extract_int(obj_start, "read_pc");
+        uint32_t buffer_addr = json_extract_int(obj_start, "buffer_addr");
+        uint32_t irq_pc      = json_extract_int(obj_start, "irq_pc");
+        uint32_t avail_pc    = json_extract_int(obj_start, "avail_pc");
+        uint32_t rx_head     = json_extract_int(obj_start, "rx_head");
+        uint32_t rx_tail     = json_extract_int(obj_start, "rx_tail");
+        short buffer_len     = (short)json_extract_int(obj_start, "buffer_len");
+        short buffer_min_len = (short)json_extract_int(obj_start, "buffer_min_len");
+        int consume_count    = (int)json_extract_int(obj_start, "consume_count");
+
+        printf("[JSON_RELOAD] main_dt: dr=0x%x read_pc=0x%x avail=0x%x\n",
+               dr, read_pc, avail_pc);
+
+        fill_data_tracker_main_dt_array(dr, callread_pc, read_pc, buffer_addr,
+                                        irq_pc, avail_pc, rx_head, rx_tail,
+                                        buffer_len, buffer_min_len, consume_count);
+        // Extract per-DT consume_pc_set
+        {
+          const char *cp = strstr(obj_start, "\"consume_pc_set\":");
+          if (cp && cp < obj_end) {
+            const char *s = strstr(cp, "[");
+            const char *e = strstr(cp, "]");
+            if (s && e && e > s && e < obj_end) {
+              int n = e - s + 1;
+              if (n < 256) {
+                memcpy(main_dt_array[main_dt_array_index-1].consume_pcs, s, n);
+                main_dt_array[main_dt_array_index-1].consume_pcs[n] = 0;
+              }
+            }
+          }
+        }
+
+        p = obj_end + 1;
+        // Stop at array boundary
+        const char *next_brace2 = strstr(p, "{");
+        const char *next_bracket2 = strstr(p, "]");
+        if (!next_brace2 || (next_bracket2 && next_bracket2 < next_brace2)) break;
+      }
+    }
+  }
+
+  free(buf);
+
+  printf("[JSON_RELOAD] loaded %d irq_dt + %d main_dt\n",
+         irq_dt_array_index, main_dt_array_index);
+}
+
+// Check if a DR address is already managed by a known DT
+static bool dr_has_known_dt(uint32_t dr) {
+  khint_t k = kh_get(dr_dt, hash_table, dr);
+  return (k != kh_end(hash_table));
+}
+
+// Rebuild placeholder DTs and monitor hooks for unknown DRs
+void rebuild_pending_drs(uc_engine *uc) {
+  for (int i = 0; i < g_num_dr_addrs; i++) {
+    uint32_t dr = g_all_dr_addrs[i];
+
+    // Skip if already has a known DT (from JSON)
+    if (dr_has_known_dt(dr)) {
+      continue;
+    }
+
+    // Skip if already has a pending entry
+    bool already_pending = false;
+    for (int j = 0; j < pending_dt_array_index; j++) {
+      if (pending_dt_array[j].dr == dr) {
+        already_pending = true;
+        break;
+      }
+    }
+    if (already_pending) continue;
+
+    // Create placeholder DataTracker
+    DataTracker *dt = &pending_dt_array[pending_dt_array_index];
+    memset(dt, 0, sizeof(DataTracker));
+    dt->dr = dr;
+
+    // Fill FIFO with magic token 0xAA as initial taint
+    memset(dt->fifo, 0xAA, 1);
+    dt->fifo_head = 1;
+    dt->fifo_tail = 0;
+
+    // Insert into hash table
+    int ret = 0;
+    khint_t k = kh_put(dr_dt, hash_table, dr, &ret);
+    if (ret != -1) {
+      kh_value(hash_table, k) = dt;
+    }
+
+    // Add MEM_READ_AFTER hook for this DR
+    uc_hook hook_handle = 0;
+    uc_err err = uc_hook_add(uc, &hook_handle, UC_HOOK_MEM_READ_AFTER,
+                              hook_pending_dr_read_after, NULL, dr, dr);
+    if (err == UC_ERR_OK && g_num_pending_hooks < MAX_PENDING_HOOKS) {
+      g_pending_hook_handles[g_num_pending_hooks++] = hook_handle;
+    }
+
+    pending_dt_array_index++;
+    printf("[PENDING] DR 0x%x: placeholder created, magic=fifo[0..3]=0xAA\n", dr);
+  }
+  printf("[PENDING] Total %d pending DRs with monitor hooks\n", pending_dt_array_index);
+}
+
+// Per-round reload: called after restore_snapshot when discovery occurred
+int per_round_reload(uc_engine *uc) {
+  printf("[PER_ROUND] Starting reload...\n");
+  fflush(stdout);
+
+  // 1. Clean up old hooks
+  cleanup_avail_and_pending_hooks(uc);
+
+  // 2. Reset state
+  reset_all_tracker_state();
+
+  // 3. Read JSON & fill known DT arrays
+  json_reload_dt_arrays(uc);
+
+  // 4. Add avail hooks for known DTs
+  ufuzz_adapter_add_avail_hook(uc);
+
+  // 5. Start buffer_min_len inference for first DT that needs it
+  if (g_bufmin_state == 0) {
+    for (int i = 0; i < irq_dt_array_index; i++) {
+      DataTracker *dt = &irq_dt_array[i];
+      if (dt->avail_pc && dt->buffer_min_len == 0) dt->buffer_min_len = 1;
+      // if (dt->avail_pc && dt->buffer_min_len == 0) {
+      //   g_bufmin_dt_idx = i;
+      //   g_bufmin_state = 1;
+      //   g_bufmin_count = 0;
+      //   g_bufmin_irq = 0;  // resolved lazily on first avail hit
+      //   g_bufmin_read_off = dt->buffer_addr;
+      //   // Remove fuzzing avail hooks, replace with learning hook
+      //   for (int j = 0; j < g_num_avail_hooks; j++)
+      //     uc_hook_del(uc, g_avail_hook_handles[j]);
+      //   g_num_avail_hooks = 0;
+      //   uc_hook_add(uc, &g_bufmin_avail_hook, UC_HOOK_CODE,
+      //               hook_bufmin_avail, NULL,
+      //               dt->avail_pc, dt->avail_pc);
+      //   // bufmin shepherd removed — learning persists across rounds
+      //   printf("[BUFMIN] learning DT[%d]: avail_pc=0x%x irq=%d "
+      //          "buf=0x%x callread=0x%x\n",
+      //          i, dt->avail_pc, g_bufmin_irq,
+      //          dt->buffer_addr, dt->callread_pc);
+      //   fflush(stdout);
+      //   FILE *fp = fopen("/tmp/bufmin.log", "w");
+      //   if (fp) { fprintf(fp, "bufmin_start dt=%d avail=0x%x\n", i, dt->avail_pc); fclose(fp); }
+      //   break;
+      // }
+    }
+  }
+
+  // 5. Create placeholder DTs for unknown DRs
+  rebuild_pending_drs(uc);
+
+  // // 6. Init delivery budget
+  // init_delivery_budget();
+
+  printf("[PER_ROUND] Reload complete: %d main_dt, %d irq_dt, %d pending\n",
+         main_dt_array_index, irq_dt_array_index, pending_dt_array_index);
+  return 0;
+}
+
+// ====== Channel Discovery: JSON Append Helpers ======
+
+// Write a complete JSON file with semu-fuzz compatible format
+static int write_full_json(void) {
+  if (g_json_file_path[0] == 0) return -1;
+
+  FILE *fp = fopen(g_json_file_path, "w");
+  if (!fp) {
+    printf("[JSON_WRITE] Cannot open %s for writing\n", g_json_file_path);
+    return -1;
+  }
+
+  fprintf(fp, "{\n");
+
+  // irq_dt_set
+  fprintf(fp, "  \"irq_dt_set\": [\n");
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    DataTracker *dt = &irq_dt_array[i];
+    fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
+            "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
+            "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
+            "\"rx_head\": %u, \"rx_tail\": %u, "
+            "\"buffer_len\": %d, \"buffer_min_len\": %d, "
+            "\"consume_count\": 0, "
+            "\"consume_pc_set\": %s}%s\n",
+            dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
+            dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
+            dt->buffer_len, dt->buffer_min_len,
+            dt->consume_pcs[0] ? dt->consume_pcs : "[]",
+            (i < irq_dt_array_index - 1 || main_dt_array_index > 0) ? "," : "");
+  }
+  fprintf(fp, "  ],\n");
+
+  // main_dt_set
+  fprintf(fp, "  \"main_dt_set\": [\n");
+  for (int i = 0; i < main_dt_array_index; i++) {
+    DataTracker *dt = &main_dt_array[i];
+    fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
+            "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
+            "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
+            "\"rx_head\": %u, \"rx_tail\": %u, "
+            "\"buffer_len\": %d, \"buffer_min_len\": %d, "
+            "\"consume_count\": 0, "
+            "\"consume_pc_set\": %s}%s\n",
+            dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
+            dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
+            dt->buffer_len, dt->buffer_min_len,
+            dt->consume_pcs[0] ? dt->consume_pcs : "[]",
+            (i < main_dt_array_index - 1) ? "," : "");
+  }
+  fprintf(fp, "  ],\n");
+
+  // dt_created_dr
+  fprintf(fp, "  \"dt_created_dr\": [");
+  int created_count = 0;
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    fprintf(fp, "%s\"0x%x\"", created_count > 0 ? ", " : "", irq_dt_array[i].dr);
+    created_count++;
+  }
+  for (int i = 0; i < main_dt_array_index; i++) {
+    fprintf(fp, "%s\"0x%x\"", created_count > 0 ? ", " : "", main_dt_array[i].dr);
+    created_count++;
+  }
+  fprintf(fp, "],\n");
+
+  // Remaining fields (empty, for semu-fuzz compatibility)
+  fprintf(fp, "  \"blacklist\": [],\n");
+  fprintf(fp, "  \"indirect_src_addrs\": [],\n");
+  fprintf(fp, "  \"data_regs\": [],\n");
+  fprintf(fp, "  \"avail_dt_dict\": {},\n");
+  fprintf(fp, "  \"consume_dt_dict\": {},\n");
+  fprintf(fp, "  \"global_vars\": []\n");
+  fprintf(fp, "}\n");
+
+  fclose(fp);
+  printf("[JSON_WRITE] Wrote %d irq_dt + %d main_dt to %s\n",
+         irq_dt_array_index, main_dt_array_index, g_json_file_path);
+  return 0;
+}
+
+// ====== Ghidra callback management ======
+
+void set_ghidra_callback(void *cb) {
+    g_ghidra_callback = cb;
+}
+
+// ====== Channel Discovery: Callbacks ======
+
+// UC_HOOK_MEM_READ_AFTER callback for pending DRs
+void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+
+  uint32_t dr = (uint32_t)address;
+
+  if (g_in_discovery_mode) {
+    // Already in discovery, ignore further DR reads
+    return;
+  }
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  uint32_t pc = 0;
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+
+  if (ipsr != 0) {
+    // === IRQ context → interrupt-read type ===
+    printf("[DISCOVERY] DR 0x%x read in IRQ (ipsr=0x%x, pc=0x%x)\n",
+           dr, ipsr, pc);
+
+    g_discovery_dr = dr;
+    g_discovery_taint = 0xAA;  // magic token byte, not full word
+
+    // Read VTOR from CPU register
+    uint32_t vtor = 0;
+    uc_mem_read(uc, 0xE000ED08, &vtor, 4);
+    vtor_num = vtor;  // also cache globally
+
+    // Calculate IRQ PC from vector table
+    uint64_t handler_addr = vtor + ((uint64_t)ipsr * 4);
+    uint32_t handler_val = 0;
+    uc_mem_read(uc, handler_addr, &handler_val, sizeof(handler_val));
+    g_discovery_irq_pc = handler_val - 1;  // thumb bit adjustment
+
+    printf("[DISCOVERY] irq_pc=0x%x (from VTOR=0x%x + ipsr=%d*4)\n",
+           g_discovery_irq_pc, vtor, ipsr);
+
+    // // Remove ALL pending DR hooks to prevent interference this round.
+    // // They will be properly rebuilt by per_round_reload next round.
+    // for (int i = 0; i < g_num_pending_hooks; i++) {
+    //   if (g_pending_hook_handles[i]) {
+    //     uc_hook_del(uc, g_pending_hook_handles[i]);
+    //     g_pending_hook_handles[i] = 0;
+    //   }
+    // }
+    // g_num_pending_hooks = 0;
+
+    // Add global discovery tracking hooks
+    uc_hook_add(uc, &g_discovery_mem_write_hook, UC_HOOK_MEM_WRITE,
+                hook_discovery_mem_write, NULL, 0, 0xFFFFFFFF);
+    uc_hook_add(uc, &g_discovery_mem_read_hook, UC_HOOK_MEM_READ_AFTER,
+                hook_discovery_mem_read, NULL, 0, 0xFFFFFFFF);
+
+    g_in_discovery_mode = true;
+    g_discovery_addr_count = 0;
+    g_discovery_buffer_addr = 0;
+
+  } else {
+    // === Main loop context → firmware-read type (main_read) ===
+    printf("[DISCOVERY] DR 0x%x read in MAIN (pc=0x%x)\n", dr, pc);
+
+    uint32_t lr = 0;
+    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+
+    // Create main_dt with read_pc and callread_pc
+    DataTracker *dt = &main_dt_array[main_dt_array_index];
+    memset(dt, 0, sizeof(DataTracker));
+    dt->dr = dr;
+    dt->read_pc = pc;
+    dt->callread_pc = lr;  // raw LR, corrected by Ghidra correct_lr later
+    dt->irq_pc = 0;
+    dt->buffer_addr = 0;
+    dt->avail_pc = 0;  // deferred to static analysis
+
+    // Insert into hash table
+    int ret = 0;
+    khint_t k = kh_put(dr_dt, hash_table, dr, &ret);
+    if (ret != -1) {
+      kh_value(hash_table, k) = dt;
+    }
+    main_dt_array_index++;
+
+    printf("[DISCOVERY] main_read DT created: dr=0x%x read_pc=0x%x callread_pc=0x%x\n",
+           dr, pc, lr - 1);
+
+    // Signal Ghidra daemon: write JSON path to pending file
+    if (g_ghidra_callback) {
+      int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
+      if (fd >= 0) {
+        write(fd, g_json_file_path, strlen(g_json_file_path));
+        close(fd);
+      }
+    }
+
+    // Write updated JSON
+    write_full_json();
+
+    g_discovery_occurred = true;
+    do_exit(uc, UC_ERR_OK);
+  }
+}
+
+// UC_HOOK_MEM_WRITE callback during discovery — track buffer writes
+void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+
+  if (!g_in_discovery_mode) return;
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  if (ipsr != 0) {
+    // ---- In IRQ context: track taint-matching writes ----
+    if ((uint32_t)value == g_discovery_taint) {
+      // Always track write addresses (Phase 1 buffer-addr discovery)
+      if (g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
+        g_discovery_addr_list[g_discovery_addr_count++] = (uint32_t)address;
+        printf("[DISCOVERY] Tracked write #%d: addr=0x%x val=0x%x\n",
+               g_discovery_addr_count, (uint32_t)address, (uint32_t)value);
+      }
+
+      // Buffer fill: chain tracking (+1, parallel with read_pc)
+      if (g_buffer_fill_active && !g_buffer_fill_done) {
+        if (chain_try_extend((uint32_t)address)) {
+          g_chain_idle_bb = 0;
+          g_consecutive_miss = 0;
+        } else if (++g_consecutive_miss >= 5 && g_chain_extend_count > 1) {
+          printf("[DISCOVERY] FILL: done (%d consecutive misses, %d ext). "
+                 "min=0x%x max=0x%x len=%d\n",
+                 g_consecutive_miss, g_chain_extend_count,
+                 g_chain_min, g_chain_max,
+                 g_chain_max - g_chain_min + 1);
+          g_buffer_fill_done = true;
+          if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
+          if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
+          if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
+        }
+      }
+    }
+  } else {
+    // ---- In main loop context ----
+    if (g_discovery_addr_count > 0 && g_discovery_buffer_addr == 0) {
+      // buffer_addr just found → start parallel fill + read_pc capture
+      g_discovery_buffer_addr =
+          g_discovery_addr_list[g_discovery_addr_count - 1];
+      printf("[DISCOVERY] IRQ exited. Buffer addr = 0x%x (from %d writes)\n",
+             g_discovery_buffer_addr, g_discovery_addr_count);
+
+      // ---- start buffer fill (refill + manual IRQ) ----
+      g_buffer_fill_active = true;
+      g_chain_min = g_discovery_buffer_addr;
+      g_chain_max = g_discovery_buffer_addr;
+      // start from buffer_addr, like semu_fuzz's offset=buffer_addr
+      g_chain_extend_count = 1;   // Phase 0 already wrote buffer_addr
+      g_consecutive_miss = 0;
+      g_chain_idle_bb = 0;
+      g_fill_irq_num = get_match_irq_num(uc, g_discovery_irq_pc);
+
+      // Prime DT FIFO & pend IRQ to kick off fill loop
+      {
+        khint_t k = kh_get(dr_dt, hash_table, g_discovery_dr);
+        if (k != kh_end(hash_table)) {
+          DataTracker *pdt = kh_value(hash_table, k);
+          memset(pdt->fifo, 0xAA, 1);
+          pdt->fifo_head = 1;
+          pdt->fifo_tail = 0;
+        }
+      }
+      if (g_fill_irq_num) {
+        nvic_set_pending(uc, g_fill_irq_num, false);
+      }
+      printf("[DISCOVERY] FILL: started. irq=%d, pend sent\n", g_fill_irq_num);
+
+      // ---- start chain convergence block hook ----
+      uc_hook_add(uc, &g_chain_block_hook, UC_HOOK_BLOCK,
+                  hook_chain_block, NULL, 1, 0);
+
+      // ---- hook buffer read for parallel read_pc capture ----
+      uc_hook_add(uc, &g_discovery_buffer_read_hook, UC_HOOK_MEM_READ_AFTER,
+                  hook_phase1_buffer_read, NULL,
+                  g_discovery_buffer_addr, g_discovery_buffer_addr);
+    }
+
+    // ---- semu-fuzz end condition: ISR exited, fill was active ----
+    // During fill loop, nvic_set_pending re-enters ISR immediately,
+    // so ipsr==0 only fires when fill stops (buffer full / ISR won't re-enter).
+    if (g_buffer_fill_active && !g_buffer_fill_done) {
+      if (g_chain_extend_count > 1) {
+        printf("[DISCOVERY] FILL: done (ISR exited, %d extensions). "
+               "min=0x%x max=0x%x len=%d\n",
+               g_chain_extend_count, g_chain_min, g_chain_max,
+               g_chain_max - g_chain_min + 1);
+        g_buffer_fill_done = true;
+        // Delete global hooks immediately (like semu_fuzz), read_pc uses its own hook
+        if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
+        if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
+        if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
+      }
+    }
+    try_finalize(uc);
+  }
+}
+
+// UC_HOOK_MEM_READ_AFTER callback during discovery — update taint
+void hook_discovery_mem_read(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+
+  if (!g_in_discovery_mode) return;
+
+  if (address == g_discovery_dr) {
+    g_discovery_taint = 0xAA;
+    printf("[DISCOVERY] Taint updated: DR 0x%x re-read\n", (uint32_t)address);
+
+    // Buffer fill: refill DT FIFO and pend IRQ for next read
+    if (g_buffer_fill_active && !g_buffer_fill_done) {
+      khint_t k = kh_get(dr_dt, hash_table, (uint32_t)address);
+      if (k != kh_end(hash_table)) {
+        DataTracker *dt = kh_value(hash_table, k);
+        memset(dt->fifo, 0xAA, 1);
+        dt->fifo_head = 1;
+        dt->fifo_tail = 0;
+      }
+      if (g_fill_irq_num) {
+        nvic_set_pending(uc, g_fill_irq_num, false);
+      }
+    }
+  }
+}
+
+// ====== Channel Discovery: Phase 1 buffer read callback ======
+
+// Fires when main loop reads the discovered buffer address.
+// Captures read_pc (PC at buffer read) and callread_pc (LR = caller).
+// Runs in PARALLEL with buffer fill (refill + manual IRQ loop).
+void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+
+  if (!g_in_discovery_mode) return;
+  if (g_read_pc_done) return;
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  if (ipsr != 0) return; // only capture in main loop
+
+  uint32_t pc = 0;
+  uint32_t lr = 0;
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+
+  g_discovery_read_pc = pc;
+  g_discovery_callread_pc = lr;  // raw LR, corrected by Ghidra correct_lr later
+  g_read_pc_done = true;
+
+  if (g_discovery_buffer_read_hook) {
+    uc_hook_del(uc, g_discovery_buffer_read_hook);
+    g_discovery_buffer_read_hook = 0;
+  }
+
+  printf("[DISCOVERY] read_pc=0x%x callread_pc=0x%x (lr=0x%x)\n",
+         g_discovery_read_pc, g_discovery_callread_pc, lr);
+
+  try_finalize(uc);
+}
+
+// ====== Buffer fill: chain tracking ======
+
+// Semu-fuzz style: addr == chain_max + 1. Noise is silently ignored.
+static bool chain_try_extend(uint32_t addr) {
+  if (addr == g_chain_max + 1) {
+    g_chain_max = addr;
+    g_chain_extend_count++;
+    printf("[DISCOVERY] FILL: chain +1 → 0x%x (#%d)\n", addr, g_chain_extend_count);
+    return true;
+  }
+  return false;
+}
+
+// ====== Buffer minimum length inference (semu-fuzz: hook_func_got_buffer_min_len) ======
+
+// Called at avail_pc: put 1 byte into DT FIFO and pend IRQ.
+// Each invocation increments the counter.  First call also sets up finish + read-ptr hooks.
+static void hook_bufmin_avail(uc_engine *uc, uint64_t address, uint32_t size,
+    void *user_data) {
+
+  if (g_bufmin_state != 1) return;
+
+  // Lazy irq_num resolution (NVIC not yet configured at per_round_reload time)
+  if (!g_bufmin_irq && g_bufmin_dt_idx >= 0) {
+    g_bufmin_irq = get_match_irq_num(uc, irq_dt_array[g_bufmin_dt_idx].irq_pc);
+    if (g_bufmin_irq) irq_dt_array[g_bufmin_dt_idx].irq_num = g_bufmin_irq;
+  }
+
+  // First time: set default, register finish + read-ptr hooks
+  if (!g_bufmin_finish_hook && g_bufmin_dt_idx >= 0) {
+    DataTracker *dt = &irq_dt_array[g_bufmin_dt_idx];
+    dt->buffer_min_len = 1;  // default minimum
+    if (dt->callread_pc) {
+      uc_hook_add(uc, &g_bufmin_finish_hook, UC_HOOK_CODE,
+                  hook_bufmin_finish, NULL,
+                  dt->callread_pc, dt->callread_pc);
+      printf("[BUFMIN] finish hook at callread_pc=0x%x\n", dt->callread_pc);
+    }
+    if (dt->buffer_addr) {
+      g_bufmin_read_off = dt->buffer_addr;
+      uc_hook_add(uc, &g_bufmin_read_hook, UC_HOOK_MEM_READ,
+                  hook_bufmin_read_ptr, NULL,
+                  dt->buffer_addr, dt->buffer_addr);
+      printf("[BUFMIN] read-ptr hook at buffer_addr=0x%x\n", dt->buffer_addr);
+    }
+  }
+
+  // Put 1 byte into DT FIFO and pend IRQ (capped at buffer_len)
+  if (g_bufmin_dt_idx >= 0) {
+    DataTracker *dt = &irq_dt_array[g_bufmin_dt_idx];
+    if (g_bufmin_count < dt->buffer_len) {
+      memset(dt->fifo, 0xAA, 1);
+      dt->fifo_head = 1;
+      dt->fifo_tail = 0;
+      g_bufmin_count++;
+      printf("[BUFMIN] avail hit #%d/%d\n", g_bufmin_count, dt->buffer_len);
+      if (g_bufmin_irq)
+        nvic_set_pending(uc, g_bufmin_irq, false);
+    } else {
+      printf("[BUFMIN] avail hit ignored (reached limit %d)\n", dt->buffer_len);
+    }
+  }
+}
+
+// Called at callread_pc: check if bufmin learning is complete.
+static void hook_bufmin_finish(uc_engine *uc, uint64_t address, uint32_t size,
+    void *user_data) {
+
+  if (g_bufmin_state != 1) return;
+  if (g_bufmin_count == 0) return; // wait for first avail hit
+
+  // Learning done!
+  if (g_bufmin_dt_idx >= 0) {
+    irq_dt_array[g_bufmin_dt_idx].buffer_min_len = (short)g_bufmin_count;
+    printf("[BUFMIN] done: DT[%d] buffer_min_len=%d\n",
+           g_bufmin_dt_idx, g_bufmin_count);
+    fflush(stdout);
+    FILE *fp = fopen("/tmp/bufmin.log", "a");
+    if (fp) { fprintf(fp, "bufmin_done len=%d\n", g_bufmin_count); fclose(fp); }
+  }
+
+  // Cleanup hooks
+  if (g_bufmin_avail_hook) { uc_hook_del(uc, g_bufmin_avail_hook); g_bufmin_avail_hook = 0; }
+  if (g_bufmin_finish_hook) { uc_hook_del(uc, g_bufmin_finish_hook); g_bufmin_finish_hook = 0; }
+  if (g_bufmin_read_hook)   { uc_hook_del(uc, g_bufmin_read_hook);   g_bufmin_read_hook = 0; }
+
+  g_bufmin_state = 2;
+  write_full_json();
+  g_discovery_occurred = true;
+  do_exit(uc, UC_ERR_OK);
+}
+
+// Buffer read pointer tracking (semu-fuzz: hook_func_buffer_pointer)
+// Advances the hook by 1 byte each time the main loop reads from buffer.
+static void hook_bufmin_read_ptr(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+
+  if (g_bufmin_state != 1) return;
+
+  // Delete old hook, advance offset, re-hook at new position
+  if (g_bufmin_read_hook) {
+    uc_hook_del(uc, g_bufmin_read_hook);
+    g_bufmin_read_hook = 0;
+  }
+  g_bufmin_read_off++;
+  uc_hook_add(uc, &g_bufmin_read_hook, UC_HOOK_MEM_READ,
+              hook_bufmin_read_ptr, NULL,
+              g_bufmin_read_off, g_bufmin_read_off);
+}
+
+// Hard timeout: fallback if fill doesn't end via ipsr==0 (e.g. ISR never exits)
+static void hook_chain_block(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+
+  if (!g_buffer_fill_active || g_buffer_fill_done) return;
+
+  g_chain_idle_bb += size;
+  if (g_chain_idle_bb < 500000) return;  // 500k BB hard timeout
+
+  printf("[DISCOVERY] FILL: hard timeout after %d BBs. "
+         "min=0x%x max=0x%x ext=%d len=%d\n",
+         g_chain_idle_bb, g_chain_min, g_chain_max,
+         g_chain_extend_count,
+         g_chain_max >= g_chain_min ? g_chain_max - g_chain_min + 1 : 0);
+  g_buffer_fill_done = true;
+  if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
+  if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
+  if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
+  try_finalize(uc);
+}
+
+// If both read_pc and fill are done, finalize.
+static void try_finalize(uc_engine *uc) {
+  if (g_read_pc_done && g_buffer_fill_done)
+    finalize_discovery(uc);
+}
+
+// ====== Channel Discovery: finalize_discovery ======
+
+static void finalize_discovery(uc_engine *uc) {
+  // 1. Remove discovery hooks
+  if (g_discovery_mem_read_hook) {
+    uc_hook_del(uc, g_discovery_mem_read_hook);
+    g_discovery_mem_read_hook = 0;
+  }
+  if (g_discovery_mem_write_hook) {
+    uc_hook_del(uc, g_discovery_mem_write_hook);
+    g_discovery_mem_write_hook = 0;
+  }
+  if (g_discovery_buffer_read_hook) {
+    uc_hook_del(uc, g_discovery_buffer_read_hook);
+    g_discovery_buffer_read_hook = 0;
+  }
+  if (g_chain_block_hook) {
+    uc_hook_del(uc, g_chain_block_hook);
+    g_chain_block_hook = 0;
+  }
+  g_in_discovery_mode = false;
+  g_buffer_fill_active = false;
+
+  // 2. Create full irq_dt from discovery data
+  uint32_t dr = g_discovery_dr;
+  DataTracker *dt = &irq_dt_array[irq_dt_array_index];
+  memset(dt, 0, sizeof(DataTracker));
+  dt->dr = dr;
+  dt->irq_pc = g_discovery_irq_pc;
+  dt->buffer_addr = g_discovery_buffer_addr;
+  dt->read_pc = g_discovery_read_pc;
+  dt->callread_pc = g_discovery_callread_pc;
+  dt->avail_pc = 0;          // filled by Ghidra daemon later
+  dt->buffer_min_len = 1;    // default 1 byte (bufmin disabled)
+
+  // Compute buffer_len from chain tracking
+  if (g_chain_extend_count > 0 && g_chain_max >= g_chain_min) {
+    dt->buffer_len = (short)(g_chain_max - g_chain_min + 1);
+  } else {
+    dt->buffer_len = 0;
+  }
+
+  // Failed upper-bound inference: exit without saving, user should re-run
+  if (dt->buffer_len <= 1) {
+    printf("[DISCOVERY] buffer_len=%d — inference failed, retrying.\n",
+           dt->buffer_len);
+    fflush(stdout);
+    do_exit(uc, UC_ERR_OK);
+    return;
+  }
+
+  dt->rx_head = 0;
+  dt->rx_tail = 0;
+
+  // Signal Ghidra daemon: write JSON path to pending file
+  if (g_ghidra_callback) {
+    int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd >= 0) {
+      write(fd, g_json_file_path, strlen(g_json_file_path));
+      close(fd);
+    }
+  }
+
+  printf("[DISCOVERY] Final DT: dr=0x%x irq_pc=0x%x buf=0x%x "
+         "read_pc=0x%x callread_pc=0x%x buffer_len=%d\n",
+         dt->dr, dt->irq_pc, dt->buffer_addr,
+         dt->read_pc, dt->callread_pc, dt->buffer_len);
+
+  // Update hash table (replace placeholder)
+  int ret = 0;
+  khint_t k = kh_put(dr_dt, hash_table, dr, &ret);
+  if (ret != -1) {
+    kh_value(hash_table, k) = dt;
+  }
+  irq_dt_array_index++;
+
+  // 3. Write updated JSON
+  write_full_json();
+
+  // Clean up pending reference to this DR
+  for (int i = 0; i < pending_dt_array_index; i++) {
+    if (pending_dt_array[i].dr == dr) {
+      memset(&pending_dt_array[i], 0, sizeof(DataTracker));
+      break;
+    }
+  }
+
+  g_discovery_occurred = true;
+
+  printf("[DISCOVERY] Complete: DR=0x%x irq_pc=0x%x buf=0x%x "
+         "read_pc=0x%x callread_pc=0x%x buffer_len=%d\n",
+         dr, g_discovery_irq_pc, g_discovery_buffer_addr,
+         g_discovery_read_pc, g_discovery_callread_pc, dt->buffer_len);
+
+  do_exit(uc, UC_ERR_OK);
+}
+
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf,
                    uint32_t size) {
-  // read_times++;
-  // if (dt->fifo_head == dt->fifo_tail) {
-  //   return true;
-  // }
-  // int memcpy_size = (dt->fifo_tail + size > dt->fifo_head)
-  //                       ? (dt->fifo_head - dt->fifo_tail)
-  //                       : size;
-  // memcpy(buf, &dt->fifo[dt->fifo_tail], memcpy_size);
-  // my_debug_log("fifo_get_fuzz\n");
-  // dt->fifo_tail += memcpy_size;
-  // return false;
-
-  return get_fuzz(uc, buf, size);
+  if (dt->fifo_head == dt->fifo_tail) {
+    return true;
+  }
+  int available = dt->fifo_head - dt->fifo_tail;
+  int copy_size = (available < (int)size) ? available : (int)size;
+  memcpy(buf, &dt->fifo[dt->fifo_tail], copy_size);
+  dt->fifo_tail += copy_size;
+  return false;
 }
 
 int stop_for_firmware_read_datareg() {
   stop_count = 0;
   return stop_count;
 }
+
+int avail_cnt(uint64_t address) {
+    // 获取进程号
+    // pid_t pid = getpid();
+    char filename[200];
+    // 生成文件名
+    snprintf(filename, sizeof(filename), "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/avail_cnt/avail_cnt_0x%lx.txt",address);
+    // 打开文件
+    // printf("filename :%s\n", filename);
+    FILE *fp = fopen(filename, "r+");
+    if (fp == NULL) {
+        // 文件不存在，创建并初始化
+        fp = fopen(filename, "w+");
+        if (fp == NULL) {
+            perror("Error opening file");
+            return 1;
+        }
+        // 初始化文件内容为 0
+        fprintf(fp, "%d", 0);
+        rewind(fp);
+    }
+
+    int num;
+    // 读取文件中的数字
+    if (fscanf(fp, "%d", &num)!= 1) {
+        perror("Error reading from file");
+        fclose(fp);
+        return 1;
+    }
+    num++;  // 数字加 1
+    rewind(fp);  // 重置文件指针到开头
+    // 写回更新后的数字
+    if (fprintf(fp, "%d", num) < 0) {
+        perror("Error writing to file");
+        fclose(fp);
+        return 1;
+    }
+    fclose(fp);  // 关闭文件
+    return 0;
+  }

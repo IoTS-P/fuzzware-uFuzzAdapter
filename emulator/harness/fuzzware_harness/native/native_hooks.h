@@ -1,6 +1,7 @@
 #ifndef NATIVE_HOOKS_H
 #define NATIVE_HOOKS_H
 
+#include <stdbool.h>
 #include "state_snapshotting.h"
 #include "uc_snapshot.h"
 #include "ufuzz_adapter/data_tracker.h"
@@ -19,7 +20,7 @@
 #define DEBUG_TIMER_TIMEOUT 100
 
 extern int do_print_exit_info;
-extern short skip_interrupt;
+extern bool is_irq_managed_by_dt(int irq_num);
 extern uint32_t num_mmio_regions;
 extern uint64_t *mmio_region_starts;
 extern uint64_t *mmio_region_ends;
@@ -65,6 +66,7 @@ void do_exit(uc_engine *uc, uc_err err);
 void force_crash(uc_engine *uc, uc_err error);
 void add_exit_hook(exit_hook_t hook);
 uc_err load_fuzz(const char *path);
+int avail_cnt(uint64_t address);
 
 /**
  * Returns 0 upon success, 1 if no input is present.
@@ -161,4 +163,17 @@ void reset_datatrcker_and_global_vars();
 int init_dr_dt_hash();
 bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf, uint32_t size);
 int stop_for_firmware_read_datareg();
+
+// Ghidra static analysis callback (called from Python via ctypes)
+void set_ghidra_callback(void *cb);
+
+// Channel discovery functions
+int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
+                     uint32_t *sr_addrs, int num_srs,
+                     const char *json_path, uint32_t vtor);
+int per_round_reload(uc_engine *uc);
+void reset_all_tracker_state(void);
+void cleanup_avail_and_pending_hooks(uc_engine *uc);
+void rebuild_pending_drs(uc_engine *uc);
+void json_reload_dt_arrays(uc_engine *uc);
 #endif

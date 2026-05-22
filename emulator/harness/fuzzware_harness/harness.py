@@ -3,6 +3,7 @@ import gc
 import os
 import sys
 import logging
+import threading
 
 from unicorn import (UC_ARCH_ARM, UC_MODE_MCLASS, UC_MODE_THUMB, Uc,UC_HOOK_BLOCK,UC_HOOK_CODE,UC_HOOK_INTR)
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_SP
@@ -18,7 +19,7 @@ from .util import (bytes2int, load_config_deep, parse_address_value,
                    parse_symbols, resolve_region_file_paths, closest_symbol)
 
 # logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
-logging.basicConfig(filename='/tmp/emulatoraaa.log', level=logging.DEBUG,filemode="w")
+logging.basicConfig(filename='/tmp/emulatoraaa.log', level=logging.DEBUG, filemode="a")
 logger = logging.getLogger("emulator")
 
 def unicorn_trace_syms(uc, pc, size=0, user_data=None):
@@ -34,6 +35,17 @@ def unicorn_trace_syms(uc, pc, size=0, user_data=None):
 def configure_unicorn(args):
     logger.info(f"Loading configuration in {str(args.config)}")
     config = load_config_deep(args.config)
+
+    # Truncate emulator log on first run of each pipeline session
+    # (use Ghidra port file as indicator of first-run, like Ghidra log)
+    if config.get("binary_file"):
+        port_file = os.path.join(os.path.dirname(config["binary_file"]),
+                                 "ghidra_project", "ghidra_port.txt")
+        if not os.path.exists(port_file):
+            try:
+                with open('/tmp/emulatoraaa.log', 'w') as _f: pass
+            except Exception:
+                pass
 
     native_lib_path = os.path.dirname(os.path.realpath(__file__))+'/native/native_hooks.so'
     if not os.path.exists(native_lib_path):
@@ -264,29 +276,115 @@ def configure_unicorn(args):
     native.init_timer_hook(uc, global_timer_scale)
     timer.configure_timers(uc, config)
     # Data Tracker Setup here
-    from .uFuzzAdapterPython.shm_dt_function import read_from_shm_json,hook_fuzzware_bugs,heat_press_change_pc
+    from .uFuzzAdapterPython.shm_dt_function import (
+        hook_fuzzware_bugs, heat_press_change_pc,
+        find_rule_file, find_json_file, parse_rule_file
+    )
     from .native import native_lib
-    read_from_shm_json(config,native_lib,vtor)
+    import ctypes
+
+    # Pass DR/SR lists and JSON path to C layer for channel discovery
+    binary_dir = os.path.dirname(config["binary_file"])
+    rule_file = find_rule_file(binary_dir)
+    if rule_file:
+        dr_addrs, sr_addrs = parse_rule_file(rule_file)
+        json_path = find_json_file(binary_dir) or os.path.join(binary_dir, "discovered_channels.json")
+        logging.info(f"Rule file: {rule_file}, {len(dr_addrs)} DRs, {len(sr_addrs)} SRs, JSON: {json_path}")
+        native_lib.store_dr_sr_list(
+            (ctypes.c_uint32 * len(dr_addrs))(*dr_addrs), len(dr_addrs),
+            (ctypes.c_uint32 * len(sr_addrs))(*sr_addrs), len(sr_addrs),
+            json_path.encode() if json_path else None,
+            vtor
+        )
+    else:
+        json_path = find_json_file(binary_dir)
+        if json_path:
+            logging.info(f"No rule file, using JSON: {json_path}")
+            native_lib.store_dr_sr_list(
+                (ctypes.c_uint32 * 0)(), 0,
+                (ctypes.c_uint32 * 0)(), 0,
+                json_path.encode(), vtor
+            )
+        else:
+            logging.warning("No rule file or JSON found, channel discovery disabled")
+
     logging.info(sys.argv)
     if sys.argv[0] == "fuzzware_harness":
         hook_fuzzware_bugs(uc)
-        # print(sys.argv)
-        # if "heat_press" in sys.argv[2]:
-        # uc.hook_add(UC_HOOK_BLOCK, heat_press_change_pc, None, 0x802a4, 0x802a8)
-    # else:
-    #     if "heat_press" in sys.argv[2]:
-    #         logging.info("heat_press")
-    #         
-    #         res2 = uc.hook_add(UC_HOOK_BLOCK, heat_press_avail_count, None, 0x8046c, 0x8046c)
-    #         res3 = uc.hook_add(UC_HOOK_BLOCK, heat_press_avail_count, None, 0x8049c, 0x8049c)
-    #         logging.info(f"res1:{res1} res2:{res2} res3:{res3}")
-    #     if "PLC" in sys.argv[2]:
-    #         uc.hook_add(UC_HOOK_BLOCK, plc_avail_count,None,0x8000b4a,0x8000b4a)
-    #         uc.hook_add(UC_HOOK_BLOCK, plc_avail_count,None,0x8000bba,0x8000bba)
-    # my_add_hooks(uc)
-    # uc.hook_add(UC_HOOK_BLOCK, _hook_instruction)
-    native_lib.ufuzz_adapter_add_avail_hook(uc._uch)
     # Data Tracker Setup end here
+
+    # ---- Ghidra static analysis setup ----
+    # Derive ELF path from the firmware binary (.bin → .elf)
+    text_region = config.get("memory_map", {}).get("text", {})
+    if text_region and "file" in text_region:
+        elf_path = os.path.join(binary_dir,
+            os.path.splitext(os.path.basename(text_region["file"]))[0] + ".elf")
+        elf_path = os.path.abspath(elf_path)  # Ghidra needs absolute path
+        if os.path.exists(elf_path):
+            from .uFuzzAdapterPython.ghidra.headless_ghidra import start_ghidra, ghidra_run_script
+            ghidra_port = start_ghidra(elf_path, binary_dir)
+            if ghidra_port:
+                entry = config['entry_point']
+
+                # Mark Ghidra as enabled (C code checks g_ghidra_callback != NULL)
+                native_lib.set_ghidra_callback(ctypes.c_void_p(1))
+
+                # Non-blocking daemon: poll /tmp/ghidra_pending, run Ghidra, patch JSON
+                import time as _time
+                def _ghidra_daemon():
+                    import json as _json2
+                    pending = "/tmp/ghidra_pending"
+                    while True:
+                        if os.path.exists(pending):
+                            try:
+                                with open(pending, 'r') as _f:
+                                    json_f = _f.read().strip()
+                                os.remove(pending)
+                                if os.path.exists(json_f):
+                                    with open(json_f, 'r') as _f:
+                                        data = _json2.load(_f)
+                                    changed = False
+                                    for key in ['irq_dt_set', 'main_dt_set']:
+                                        for dt in data.get(key, []):
+                                            if dt.get('avail_pc', '0x0') != '0x0':
+                                                continue  # already has result
+                                            raw_lr = int(dt['callread_pc'], 16)
+                                            try:
+                                                cr = ghidra_run_script(ghidra_port, "correct_lr", [raw_lr])
+                                            except Exception:
+                                                pass
+                                            rpc = int(dt['read_pc'], 16)
+                                            ipc = int(dt['irq_pc'], 16) if dt.get('irq_pc', '0x0') != '0x0' else 0
+                                            ba = int(dt['buffer_addr'], 16) if dt.get('buffer_addr', '0x0') != '0x0' else 0
+                                            try:
+                                                res, _ = ghidra_run_script(ghidra_port, "global_static_data",
+                                                    [cr, rpc, entry, ipc, ba, ""])
+                                                dt['avail_pc'] = res[0].get('avail_pc', '0x0') if res else '0x0'
+                                                dt['callread_pc'] = hex(cr)
+                                                dt['consume_pc_set'] = res[0].get('consume_pc_set', []) if res else []
+                                                changed = True
+                                            except Exception as e:
+                                                logging.error("[GHIDRA-DAEMON] failed: %s", e)
+                                    if changed:
+                                        with open(json_f, 'w') as _f:
+                                            _json2.dump(data, _f, indent=2)
+                                        with open("/tmp/ghidra_done", 'w') as _f:
+                                            pass
+                                        logging.info("[GHIDRA-DAEMON] patched %s", json_f)
+                            except Exception as e:
+                                logging.error("[GHIDRA-DAEMON] error: %s", e)
+                        _time.sleep(2)
+                _dt = threading.Thread(target=_ghidra_daemon, daemon=True)
+                _dt.start()
+
+                logging.info(f"Ghidra enabled: elf={elf_path} port={ghidra_port} entry=0x{entry:x}")
+                logging.info(f"Ghidra logs → /tmp/ghidra_fuzzware.log")
+            else:
+                logging.warning("Ghidra failed to start, static analysis disabled")
+        else:
+            logging.warning(f"Ghidra disabled: ELF not found at {elf_path}")
+    else:
+        logging.info("Ghidra disabled: no text region with file in memory_map")
     # MMIO modeling and listener setup
     parse_mmio_model_config(uc, config)
   

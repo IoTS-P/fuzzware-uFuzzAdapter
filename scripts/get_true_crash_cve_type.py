@@ -53,7 +53,7 @@ def save_results(crash_map, crash_list, output_path):
             file.write(line)
 
 
-time_list = ["0707"]
+time_list = ["0410"]
 ADAPTER = True
 which_fuzzware = "adapter" if ADAPTER else "original"
 # Usage example

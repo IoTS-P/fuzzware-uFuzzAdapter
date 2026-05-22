@@ -419,7 +419,15 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     _setup_prototype(native_lib, "fill_data_tracker_irq_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short,ctypes.c_uint32)
     #ufuzz_adapter_add_avail_hook(uc_engine *uc)
     _setup_prototype(native_lib, "ufuzz_adapter_add_avail_hook", ctypes.c_int, uc_engine)
-    
+    # Channel discovery
+    _setup_prototype(native_lib, "store_dr_sr_list", ctypes.c_int,
+                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
+                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
+                     ctypes.c_char_p, ctypes.c_uint32)
+    _setup_prototype(native_lib, "per_round_reload", ctypes.c_int, uc_engine)
+
+    _setup_prototype(native_lib, "set_ghidra_callback", None, ctypes.c_void_p)
+
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)
     mmio_region_starts_arr = (ctypes.c_int64 * len(mmio_region_starts))(*mmio_region_starts)
     mmio_region_ends_arr = (ctypes.c_int64 * len(mmio_region_ends))(*mmio_region_ends)

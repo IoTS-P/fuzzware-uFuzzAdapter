@@ -70,6 +70,11 @@ class StructDataTracker(ctypes.Structure):
         ("rx_tail", ctypes.c_uint32),
         ("buffer_len", ctypes.c_short),
         ("buffer_min_len", ctypes.c_short),
-        ("consume_count", ctypes.c_short),
+        ("irq_num", ctypes.c_short),
+        ("consume_pcs", ctypes.c_char * 256),
+        ("fifo", ctypes.c_uint8 * 4096),
+        ("fifo_head", ctypes.c_short),
+        ("fifo_tail", ctypes.c_short),
+        ("interrupt_times", ctypes.c_int),
     ]
 
