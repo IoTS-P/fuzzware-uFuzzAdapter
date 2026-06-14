@@ -66,7 +66,6 @@ void do_exit(uc_engine *uc, uc_err err);
 void force_crash(uc_engine *uc, uc_err error);
 void add_exit_hook(exit_hook_t hook);
 uc_err load_fuzz(const char *path);
-int avail_cnt(uint64_t address);
 
 /**
  * Returns 0 upon success, 1 if no input is present.
@@ -152,8 +151,6 @@ int ufuzz_adapter_add_avail_hook(uc_engine *uc);
 int get_current_partition(DataTracker *dt);
 int random_split_data_input(DataTracker *dt);
 int random_split_algorithm(int index, int ceil, int threshold);
-bool is_head_tail_equal(void *uc, DataTracker *dt);
-short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr);
 int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc);
 int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
                            uc_engine *uc);
@@ -165,6 +162,7 @@ bool fifo_get_fuzz(uc_engine *uc, DataTracker *dt, uint8_t *buf, uint32_t size);
 int stop_for_firmware_read_datareg();
 
 // Ghidra static analysis callback (called from Python via ctypes)
+void set_code_hook_range(uint64_t begin, uint64_t size);
 void set_ghidra_callback(void *cb);
 
 // Channel discovery functions

@@ -317,6 +317,11 @@ def load_native_lib(native_lib_path):
 
     assert  native_lib is not None
 
+def set_code_hook_range(begin, size):
+    global native_lib
+    _setup_prototype(native_lib, "set_code_hook_range", None, ctypes.c_uint64, ctypes.c_uint64)
+    native_lib.set_code_hook_range(begin, size)
+
 def do_exit(uc, status, sig=-1):
     global native_lib
     native_lib.do_exit(uc._uch, status)
@@ -426,6 +431,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
                      ctypes.c_char_p, ctypes.c_uint32)
     _setup_prototype(native_lib, "per_round_reload", ctypes.c_int, uc_engine)
 
+    _setup_prototype(native_lib, "set_code_hook_range", None, ctypes.c_uint64, ctypes.c_uint64)
     _setup_prototype(native_lib, "set_ghidra_callback", None, ctypes.c_void_p)
 
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)

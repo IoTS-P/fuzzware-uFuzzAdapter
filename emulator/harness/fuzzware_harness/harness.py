@@ -44,6 +44,7 @@ def configure_unicorn(args):
         if not os.path.exists(port_file):
             try:
                 with open('/tmp/emulatoraaa.log', 'w') as _f: pass
+                with open('/tmp/dt_learning.log', 'w') as _f: pass
             except Exception:
                 pass
 
@@ -268,6 +269,19 @@ def configure_unicorn(args):
             logger.info(f"Handling function {str(fname)} at {addr:#10x} with {str(handler_desc['handler'])}")
             add_func_hook(uc, addr, handler_desc['handler'], do_return=handler_desc['do_return'])
 
+    text_region = config.get("memory_map", {}).get("text", {})
+    if text_region and "base_addr" in text_region and "size" in text_region:
+        text_base = parse_address_value(uc.symbols, text_region["base_addr"])
+        text_size = parse_address_value(uc.symbols, text_region["size"])
+        if text_size:
+            native.set_code_hook_range(text_base, text_size)
+            logger.info("Native code hook range: 0x%x-0x%x",
+                        text_base, text_base + text_size - 1)
+        else:
+            logger.warning("Native code hook range not set: text region size is zero")
+    else:
+        logger.warning("Native code hook range not set: no complete memory_map.text region")
+
     # Native mmio fuzzing
     native.init(uc, mmio_ranges, exit_at_bbls, args.exit_at_hit_num, args.print_exit_info, args.fuzz_consumption_timeout, args.basic_block_limit)
 
@@ -315,7 +329,6 @@ def configure_unicorn(args):
 
     # ---- Ghidra static analysis setup ----
     # Derive ELF path from the firmware binary (.bin → .elf)
-    text_region = config.get("memory_map", {}).get("text", {})
     if text_region and "file" in text_region:
         elf_path = os.path.join(binary_dir,
             os.path.splitext(os.path.basename(text_region["file"]))[0] + ".elf")

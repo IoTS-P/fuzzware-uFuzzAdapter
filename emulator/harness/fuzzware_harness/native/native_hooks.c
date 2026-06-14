@@ -35,6 +35,7 @@ target (uc_mem_write)
 #include <unistd.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdarg.h>
 
 // 0. Constants
 // ~10 MB of preallocated fuzzing buffer size
@@ -45,6 +46,7 @@ target (uc_mem_write)
 #define MAX_MMIO_CALLBACKS 4096
 #define MAX_IGNORED_ADDRESSES 4096
 #define FREAD_NMAX_CHUNKS 5
+#define DT_LEARNING_LOG_PATH "/tmp/dt_learning.log"
 
 // AFL-related constants
 // 65k bitmap size
@@ -141,7 +143,7 @@ uint32_t delivery_X = 0;       // X = 全局最小交付块大小
 uint32_t delivery_N = 0;       // N = 估算的交付点数量
 uint32_t delivery_LenR = 0;    // LenR = 剩余需求预算
 int32_t delivery_LenFI = 0;     // LenFI = 剩余额外预算（可为负）
-uint32_t global_partion = 0;
+static bool g_delivery_budget_closed = false;
 uint32_t read_times = 0;
 uint32_t vtor_num = 0;
 uint32_t stop_count = 1;
@@ -167,52 +169,254 @@ uint32_t g_discovery_irq_pc = 0;
 uint32_t g_discovery_addr_list[MAX_DISCOVERY_ADDRS] = {0};
 int g_discovery_addr_count = 0;
 uint32_t g_discovery_buffer_addr = 0;
-uc_hook g_discovery_mem_read_hook = 0;
 uc_hook g_discovery_mem_write_hook = 0;
 bool g_discovery_occurred = false;
 char g_json_file_path[512] = {0};
 
 // Phase 0: buffer-addr discovery (taint tracking, no refill)
-// After buffer_addr found → parallel fill + read_pc capture:
+// After buffer_addr is found, capture read_pc/callread_pc in the main loop.
 uint32_t g_discovery_read_pc = 0;
 uint32_t g_discovery_callread_pc = 0;
 uc_hook g_discovery_buffer_read_hook = 0;
 bool g_read_pc_done = false;
 
-// Buffer fill: active chain tracking + manual IRQ
-bool g_buffer_fill_active = false;
-bool g_buffer_fill_done = false;
-uint32_t g_fill_irq_num = 0;        // resolved IRQ number for nvic_set_pending
+// Post-static-analysis bound learning state:
+// after Ghidra fills avail_pc/consume_pc_set, learn buffer_min_len and
+// buffer_len from avail_pc-triggered IRQ writes into the discovered buffer.
+#define BOUNDS_FIFO_SIZE 4096
+#define BOUNDS_MAX_SCAN 4096
+#define BOUNDS_MISS_LIMIT 5
+#define BOUNDS_MAX_IRQ_PENDS BOUNDS_FIFO_SIZE
+#define BOUNDS_CONSUMER_LOG_LIMIT 256
+#define BOUNDS_DIAG_HOOK_MAX 8
+#ifndef DT_DIAG_HOOK_ENABLE
+#define DT_DIAG_HOOK_ENABLE 0
+#endif
+#ifndef BOUNDS_PC_TRACE_ENABLE
+#define BOUNDS_PC_TRACE_ENABLE 0
+#endif
+#define BOUNDS_PC_TRACE_LIMIT 200000
+static int g_bounds_state = 0;       // 0=IDLE, 1=INFERRING
+static int g_bounds_dt_idx = -1;
+static uint32_t g_bounds_dt_dr = 0;
+static int g_bounds_irq = 0;
+static bool g_bounds_avail_hit = false;
+static bool g_bounds_avail_pass_next = false;
+static bool g_bounds_fifo_seeded = false;
+static bool g_bounds_chain_started = false;
+static uint32_t g_bounds_chain_min = 0;
+static uint32_t g_bounds_chain_max = 0;
+static int g_bounds_miss_count = 0;
+static int g_bounds_irq_pend_count = 0;
+static int g_bounds_dr_read_log_count = 0;
+static int g_bounds_taint_write_log_count = 0;
+static bool g_bounds_need_upper = false;
+static bool g_bounds_need_min = false;
+static bool g_bounds_upper_done = false;
+static short g_bounds_upper_len = 0;
+static bool g_bounds_min_done = false;
+static short g_bounds_min_len = 0;
+static bool g_bounds_preparing_exit = false;
+static int g_bounds_consumer_log_count = 0;
+static uint32_t g_bounds_read_entry_guess_pc = 0;
+static uc_hook g_bounds_dispatch_hook = 0;
+static uint64_t g_code_hook_begin = 1;
+static uint64_t g_code_hook_end = 0;
+static uc_hook g_bounds_write_hook = 0;
+static uint32_t g_bounds_consume_pcs[16] = {0};
+static int g_bounds_num_consume_pcs = 0;
+typedef struct {
+  uint32_t pc;
+  uc_cb_hookcode_t cb;
+  const char *name;
+} BoundsDiagDispatchEntry;
+static BoundsDiagDispatchEntry g_bounds_diag_entries[BOUNDS_DIAG_HOOK_MAX] = {0};
+static int g_bounds_num_diag_hooks = 0;
+#if BOUNDS_PC_TRACE_ENABLE
+static FILE *g_bounds_pc_trace_fp = NULL;
+static uint32_t g_bounds_pc_trace_round = 0;
+static uint32_t g_bounds_pc_trace_count = 0;
+#endif
 
-// Chain tracking (consecutive +1 writes from buffer_addr)
-uint32_t g_chain_min = 0;
-uint32_t g_chain_max = 0;
-int g_chain_extend_count = 0;
-int g_consecutive_miss = 0;
-
-// Hard timeout fallback
-int g_chain_idle_bb = 0;
-uc_hook g_chain_block_hook = 0;
-
-// buffer_min_len inference state machine (semu-fuzz: hook_func_got_buffer_min_len)
-static int g_bufmin_state = 0;       // 0=IDLE, 1=INFERRING, 2=DONE
-static int g_bufmin_count = 0;
-static int g_bufmin_dt_idx = -1;     // which DT is being learned
-static uint32_t g_bufmin_irq = 0;
-static uc_hook g_bufmin_avail_hook = 0;
-static uc_hook g_bufmin_finish_hook = 0;
-static uc_hook g_bufmin_read_hook = 0;
-static uint32_t g_bufmin_read_off = 0;
-
-// Forward declarations for buffer_min_len hooks
-static void hook_bufmin_avail(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
-static void hook_bufmin_finish(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
-static void hook_bufmin_read_ptr(uc_engine *uc, uc_mem_type type,
+static void hook_bounds_avail(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_buffer_write(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data);
+static void hook_bounds_consume(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+#if BOUNDS_PC_TRACE_ENABLE
+static void hook_bounds_pc_trace(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data);
+#endif
+#if DT_DIAG_HOOK_ENABLE
+static void hook_bounds_avail_return(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_process_call(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_callread_before(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_callread_return(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_read_entry_guess(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+static void hook_bounds_read_pc_diag(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
+#endif
+static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data);
+static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
+    uint64_t address, uint32_t size);
+static void bounds_prepare_retry_on_exit(uc_engine *uc, const char *reason);
+static void bounds_finish_round(uc_engine *uc, const char *reason);
+static DataTracker *bounds_find_dt(void);
+static bool start_bounds_learning_if_needed(uc_engine *uc);
+uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
+                                    void *user_data);
+uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
+                              void *user_data);
+
+static void dt_learning_log(const char *fmt, ...) {
+  FILE *fp = fopen(DT_LEARNING_LOG_PATH, "a");
+  if (!fp) return;
+
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(fp, fmt, args);
+  va_end(args);
+  fputc('\n', fp);
+  fclose(fp);
+}
+
+#ifndef DT_DELIVERY_LOG_ENABLE
+#define DT_DELIVERY_LOG_ENABLE 1
+#endif
+
+static void delivery_log(const char *fmt, ...) {
+#if DT_DELIVERY_LOG_ENABLE
+  FILE *fp = fopen(DT_LEARNING_LOG_PATH, "a");
+  if (!fp) return;
+
+  fputs("[DELIVERY] ", fp);
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(fp, fmt, args);
+  va_end(args);
+  fputc('\n', fp);
+  fclose(fp);
+#else
+  (void)fmt;
+#endif
+}
+
+#if BOUNDS_PC_TRACE_ENABLE
+static void hook_bounds_pc_trace(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)user_data;
+  if (g_bounds_state != 1 || !g_bounds_pc_trace_fp) return;
+  if (g_bounds_pc_trace_count >= BOUNDS_PC_TRACE_LIMIT) return;
+
+  uint32_t pc = (uint32_t)address & ~1u;
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  fprintf(g_bounds_pc_trace_fp,
+          "round=%u idx=%u pc=0x%x size=0x%x ipsr=0x%x avail_hit=%d pends=%d cursor=%ld/%ld\n",
+          g_bounds_pc_trace_round,
+          g_bounds_pc_trace_count,
+          pc,
+          size,
+          ipsr,
+          g_bounds_avail_hit ? 1 : 0,
+          g_bounds_irq_pend_count,
+          fuzz_cursor,
+          fuzz_size);
+  g_bounds_pc_trace_count++;
+}
+#endif
+
+static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  uint32_t pc = (uint32_t)address & ~1u;
+
+#if BOUNDS_PC_TRACE_ENABLE
+  if (g_bounds_state == 1) {
+    hook_bounds_pc_trace(uc, address, size, user_data);
+  }
+#endif
+
+  if (g_bounds_state == 1) {
+    DataTracker *dt = bounds_find_dt();
+    if (dt) {
+      if (pc == dt->avail_pc) {
+        hook_bounds_avail(uc, address, size, user_data);
+        dispatch_complete_dt_avail_hook(uc, pc, address, size);
+        return;
+      }
+
+      for (int i = 0; i < g_bounds_num_consume_pcs; i++) {
+        if (pc == g_bounds_consume_pcs[i]) {
+          hook_bounds_consume(uc, address, size, user_data);
+          return;
+        }
+      }
+    }
+  }
+
+#if DT_DIAG_HOOK_ENABLE
+  if (g_bounds_state == 1) {
+    for (int i = 0; i < g_bounds_num_diag_hooks; i++) {
+      BoundsDiagDispatchEntry *entry = &g_bounds_diag_entries[i];
+      if (entry->pc == pc && entry->cb) {
+        entry->cb(uc, address, size, user_data);
+      }
+    }
+  }
+#endif
+
+  dispatch_complete_dt_avail_hook(uc, pc, address, size);
+}
+
+static bool bounds_should_log_dr_fifo(uint64_t addr) {
+  return g_bounds_state == 1 &&
+         (uint32_t)addr == g_bounds_dt_dr &&
+         g_bounds_dr_read_log_count < 64;
+}
+
+static void bounds_log_dr_fifo_read(uc_engine *uc, const char *source,
+    uint64_t addr, int size, uint64_t raw_val, uint64_t result_val,
+    DataTracker *dt) {
+  if (!bounds_should_log_dr_fifo(addr)) return;
+
+  uint32_t pc = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  dt_learning_log("[BOUNDS] DR_READ_FIFO source=%s pc=0x%x ipsr=0x%x "
+                  "dr=0x%lx size=%d raw=0x%llx result=0x%llx "
+                  "fifo_tail=%d fifo_head=%d",
+                  source, pc, ipsr, addr, size,
+                  (unsigned long long)raw_val,
+                  (unsigned long long)result_val,
+                  dt->fifo_tail, dt->fifo_head);
+  g_bounds_dr_read_log_count++;
+}
+
+static void bounds_log_dr_fifo_empty(uc_engine *uc, const char *source,
+    uint64_t addr, int size, DataTracker *dt) {
+  if (!bounds_should_log_dr_fifo(addr)) return;
+
+  uint32_t pc = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  dt_learning_log("[BOUNDS] DR_READ_FIFO_EMPTY source=%s pc=0x%x ipsr=0x%x "
+                  "dr=0x%lx size=%d fifo_tail=%d fifo_head=%d",
+                  source, pc, ipsr, addr, size,
+                  dt->fifo_tail, dt->fifo_head);
+  g_bounds_dr_read_log_count++;
+}
 
 // Ghidra static analysis callback
 static void *g_ghidra_callback = NULL;
-uc_hook g_avail_hook_handles[MAX_AVAIL_HOOKS] = {0};
+typedef struct {
+  uint32_t pc;
+  DataTracker *dt;
+  bool is_main;
+} AvailDispatchEntry;
+static AvailDispatchEntry g_avail_dispatch_entries[MAX_AVAIL_HOOKS] = {0};
 int g_num_avail_hooks = 0;
 uc_hook g_pending_hook_handles[MAX_PENDING_HOOKS] = {0};
 int g_num_pending_hooks = 0;
@@ -223,11 +427,10 @@ int compute_delivery_size(DataTracker *dt);
 bool is_irq_managed_by_dt(int irq_num);
 static void finalize_discovery(uc_engine *uc);
 static void try_finalize(uc_engine *uc);
+void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data);
 void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data);
-static void hook_chain_block(uc_engine *uc, uint64_t address,
-    uint32_t size, void *user_data);
-static bool chain_try_extend(uint32_t addr);
 
 static void determine_input_mode() {
   char *id_str;
@@ -254,15 +457,15 @@ static void determine_input_mode() {
 }
 
 void do_exit(uc_engine *uc, uc_err err) {
+  if (g_bounds_state == 1 && !g_bounds_preparing_exit) {
+    bounds_prepare_retry_on_exit(uc, "do_exit");
+  }
+
   printf("[EXIT] cursor=%ld/%ld fuzz_size=%ld read_times=%d\n",
          fuzz_cursor, fuzz_size, fuzz_size, read_times);
 
   // Clean up discovery hooks if still active
   if (g_in_discovery_mode) {
-    if (g_discovery_mem_read_hook) {
-      uc_hook_del(uc, g_discovery_mem_read_hook);
-      g_discovery_mem_read_hook = 0;
-    }
     if (g_discovery_mem_write_hook) {
       uc_hook_del(uc, g_discovery_mem_write_hook);
       g_discovery_mem_write_hook = 0;
@@ -271,12 +474,7 @@ void do_exit(uc_engine *uc, uc_err err) {
       uc_hook_del(uc, g_discovery_buffer_read_hook);
       g_discovery_buffer_read_hook = 0;
     }
-    if (g_chain_block_hook) {
-      uc_hook_del(uc, g_chain_block_hook);
-      g_chain_block_hook = 0;
-    }
     g_in_discovery_mode = false;
-    g_buffer_fill_active = false;
   }
 
   reset_datatrcker_and_global_vars();
@@ -635,8 +833,10 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type, uint64_t addr, int size,
     if (k != kh_end(hash_table)) {
       DataTracker *dt = kh_value(hash_table, k);
       if (!fifo_get_fuzz(uc, dt, (uint8_t *)&val, size)) {
+        bounds_log_dr_fifo_read(uc, "default", addr, size, val, val, dt);
         goto write_val;
       }
+      bounds_log_dr_fifo_empty(uc, "default", addr, size, dt);
     }
   }
   if (get_fuzz(uc, (uint8_t *)&val, size)) {
@@ -809,6 +1009,8 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
       (struct bitextract_mmio_model_config *)user_data;
   uint64_t result_val = 0;
   uint64_t fuzzer_val = 0;
+  DataTracker *fifo_dt = NULL;
+  bool fifo_used = false;
 
   // 数据源选择：DT FIFO 优先，get_fuzz 后备
   if (hash_table != NULL) {
@@ -816,8 +1018,11 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
     if (k != kh_end(hash_table)) {
       DataTracker *dt = kh_value(hash_table, k);
       if (!fifo_get_fuzz(uc, dt, (uint8_t *)(&fuzzer_val), config->byte_size)) {
+        fifo_dt = dt;
+        fifo_used = true;
         goto apply_model;
       }
+      bounds_log_dr_fifo_empty(uc, "bitextract", addr, config->byte_size, dt);
     }
   }
   if (get_fuzz(uc, (uint8_t *)(&fuzzer_val), config->byte_size)) {
@@ -826,6 +1031,10 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
 
 apply_model:
   result_val = fuzzer_val << config->left_shift;
+  if (fifo_used) {
+    bounds_log_dr_fifo_read(uc, "bitextract", addr, config->byte_size,
+                            fuzzer_val, result_val, fifo_dt);
+  }
 
 #ifdef DEBUG
   uint32_t _pc;
@@ -847,6 +1056,8 @@ void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
 
   uint64_t result_val;
   uint8_t fuzzer_val = 0;
+  DataTracker *fifo_dt = NULL;
+  bool fifo_used = false;
   // #ifdef DEBUG
   uint32_t pc;
   uc_reg_read(uc, UC_ARM_REG_PC, &pc);
@@ -859,8 +1070,11 @@ void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
       if (k != kh_end(hash_table)) {
         DataTracker *dt = kh_value(hash_table, k);
         if (!fifo_get_fuzz(uc, dt, (uint8_t *)&fuzzer_val, 1)) {
+          fifo_dt = dt;
+          fifo_used = true;
           goto apply_value_set;
         }
+        bounds_log_dr_fifo_empty(uc, "value_set", addr, 1, dt);
       }
     }
     if (get_fuzz(uc, (uint8_t *)&fuzzer_val, 1)) {
@@ -868,6 +1082,10 @@ void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
     }
 apply_value_set:
     result_val = config->values[fuzzer_val % config->num_vals];
+    if (fifo_used) {
+      bounds_log_dr_fifo_read(uc, "value_set", addr, 1, fuzzer_val,
+                              result_val, fifo_dt);
+    }
   } else {
     result_val = config->values[0];
   }
@@ -1311,6 +1529,18 @@ uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions,
                 hook_debug_mem_invalid_access, 0, 1, 0);
   }
 
+  if (!g_bounds_dispatch_hook) {
+    if (uc_hook_add(uc, &g_bounds_dispatch_hook, UC_HOOK_CODE,
+                    hook_bounds_dispatch, NULL,
+                    g_code_hook_begin, g_code_hook_end) != UC_ERR_OK) {
+      perror("Could not register bounds dispatch hook\n");
+      return UC_ERR_EXCEPTION;
+    }
+    dt_learning_log("[BOUNDS] DISPATCH_HOOK_ADD begin=0x%llx end=0x%llx",
+                    (unsigned long long)g_code_hook_begin,
+                    (unsigned long long)g_code_hook_end);
+  }
+
   // Add fuzz consumption timeout as timer
   fuzz_consumption_timeout = p_fuzz_consumption_timeout;
   fuzz_consumption_timer_id =
@@ -1680,42 +1910,52 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   return 0;
 }
 
+static bool irq_dt_is_complete_for_delivery(DataTracker *dt) {
+  return dt &&
+         dt->avail_pc != 0 &&
+         dt->buffer_len > 1 &&
+         dt->buffer_min_len > 0 &&
+         dt->buffer_min_len <= dt->buffer_len;
+}
+
+static int add_avail_dispatch_entry(uint32_t pc, DataTracker *dt, bool is_main) {
+  if (!pc || !dt) return 0;
+  if (g_num_avail_hooks >= MAX_AVAIL_HOOKS) {
+    dt_learning_log("[AVAIL_DISPATCH] SKIP pc=0x%x dr=0x%x reason=full",
+                    pc, dt->dr);
+    return -1;
+  }
+
+  g_avail_dispatch_entries[g_num_avail_hooks++] =
+      (AvailDispatchEntry){ .pc = pc, .dt = dt, .is_main = is_main };
+  return 0;
+}
+
 int ufuzz_adapter_add_avail_hook(uc_engine *uc) {
+  (void)uc;
   g_num_avail_hooks = 0;
+  memset(g_avail_dispatch_entries, 0, sizeof(g_avail_dispatch_entries));
+
   for (int i = 0; i < main_dt_array_index; i++) {
     if (main_dt_array[i].avail_pc != 0) {
-      uc_hook avail_hook;
-      if (uc_hook_add(uc, &avail_hook, UC_HOOK_CODE,
-                      main_proc_avail_hook_handler, &main_dt_array[i],
-                      main_dt_array[i].avail_pc,
-                      main_dt_array[i].avail_pc) != UC_ERR_OK) {
-        perror("Could not add avail hook\n");
+      if (add_avail_dispatch_entry(main_dt_array[i].avail_pc,
+                                   &main_dt_array[i], true) != 0) {
         return -1;
-      }
-      if (g_num_avail_hooks < MAX_AVAIL_HOOKS) {
-        g_avail_hook_handles[g_num_avail_hooks++] = avail_hook;
-      }
-    }
-  }
-  for (int i = 0; i < irq_dt_array_index; i++) {
-    if (irq_dt_array[i].avail_pc != 0) {
-      uc_hook irq_hook;
-      printf("avail_pc = %x\n", irq_dt_array[i].avail_pc);
-      FILE *fp = fopen("/tmp/ghidra_reload.log", "a");
-      if (fp) { fprintf(fp, "avail_pc=0x%x\n", irq_dt_array[i].avail_pc); fclose(fp); }
-      int res = uc_hook_add(uc, &irq_hook, UC_HOOK_CODE, irq_avail_hook_handler,
-                            &irq_dt_array[i], irq_dt_array[i].avail_pc,
-                            irq_dt_array[i].avail_pc);
-      if (res != UC_ERR_OK) {
-        perror("Could not add avail hook\n");
-        return -1;
-      }
-      if (g_num_avail_hooks < MAX_AVAIL_HOOKS) {
-        g_avail_hook_handles[g_num_avail_hooks++] = irq_hook;
       }
     }
   }
 
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    if (irq_dt_is_complete_for_delivery(&irq_dt_array[i])) {
+      if (add_avail_dispatch_entry(irq_dt_array[i].avail_pc,
+                                   &irq_dt_array[i], false) != 0) {
+        return -1;
+      }
+    }
+  }
+
+  dt_learning_log("[AVAIL_DISPATCH] REFRESH entries=%d main_dt=%d irq_dt=%d",
+                  g_num_avail_hooks, main_dt_array_index, irq_dt_array_index);
   return 0;
 }
 
@@ -1753,18 +1993,26 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   } else if (dt->irq_pc == 256) {
     return UC_ERR_OK;
   } else {
-    // 每次重新查询，避免 NVIC 未启用时缓存 0
-    dt->irq_num = get_match_irq_num(uc, dt->irq_pc);
-    if (dt->irq_num == 0) {
-      return UC_ERR_OK;  // 中断尚未启用，等下次
+    // 每次重新查询，避免 NVIC 未启用时缓存
+    int resolved = get_match_irq_num(uc, dt->irq_pc);
+    if (resolved < 0) {
+      return UC_ERR_OK;  // 中断尚未启用 / 未匹配，等下次
     }
+    dt->irq_num = (short)resolved;
   }
 
   // ---- FIFO 空则装填 ----
   if (!dt->interrupt_times) {
+    if (g_delivery_budget_closed) {
+      return UC_ERR_OK;
+    }
+
     int len_si = compute_delivery_size(dt);
     if (len_si == 0) {
-      printf("***irq dt budget exhausted\n");
+      delivery_log("BUDGET_EXHAUSTED dr=0x%x LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                   dt->dr, delivery_LenFI, delivery_LenR, delivery_X,
+                   fuzz_cursor, fuzz_size);
+      g_delivery_budget_closed = true;
       return UC_ERR_OK;
     }
     fill_data(dt, len_si, uc);
@@ -1772,9 +2020,11 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     if (delivery_LenFI < 0) delivery_LenFI = 0;
     delivery_LenR  = delivery_LenR - delivery_X;
     if (delivery_LenR == 0) delivery_X = 0;
-    printf("***fill fifo: %d bytes, LenFI=%d, LenR=%d\n",
-           len_si, delivery_LenFI, delivery_LenR);
     dt->interrupt_times = len_si;
+    delivery_log("COMMIT dr=0x%x plan=%d irq_times=%d LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, len_si, dt->interrupt_times,
+                 delivery_LenFI, delivery_LenR, delivery_X,
+                 fuzz_cursor, fuzz_size);
     return UC_ERR_OK;
   }
 
@@ -1784,31 +2034,69 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
   return UC_ERR_OK;
 }
 
+static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
+    uint64_t address, uint32_t size) {
+  bool handled = false;
+
+  for (int i = 0; i < g_num_avail_hooks; i++) {
+    AvailDispatchEntry *entry = &g_avail_dispatch_entries[i];
+    if (entry->pc != pc || !entry->dt) continue;
+
+    if (entry->is_main) {
+      main_proc_avail_hook_handler(uc, address, size, entry->dt);
+    } else {
+      irq_avail_hook_handler(uc, address, size, entry->dt);
+    }
+    handled = true;
+  }
+
+  return handled;
+}
+
 // ====== 替换 get_current_partition/random_split 系列函数 ======
 
 // 初始化交付预算（ 行 1-13）：估算 N、X、LenR
 void init_delivery_budget(void) {
-  delivery_N = irq_dt_array_index;
+  delivery_N = 0;
+  delivery_X = 0xFFFFFFFF;
+  delivery_LenR = 0;
+  delivery_LenFI = 0;
+  g_delivery_budget_closed = false;
+
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    DataTracker *dt = &irq_dt_array[i];
+    if (!irq_dt_is_complete_for_delivery(dt)) continue;
+
+    delivery_N++;
+    uint32_t low = (uint32_t)dt->buffer_min_len;
+    if (low < delivery_X) delivery_X = low;
+  }
+
   if (delivery_N == 0) {
     delivery_X = 1;
     delivery_LenR = 0;
+    delivery_LenFI = fuzz_size;
+    delivery_log("INIT_SKIP reason=no_complete_irq_dt fuzz_size=%ld fuzz_cursor=%ld",
+                 fuzz_size, fuzz_cursor);
     return;
   }
-  delivery_X = 0xFFFFFFFF;
-  for (int i = 0; i < irq_dt_array_index; i++) {
-    uint32_t low = irq_dt_array[i].buffer_min_len > 0
-                       ? irq_dt_array[i].buffer_min_len : 1;
-    if (low < delivery_X) delivery_X = low;
-  }
+
   if (delivery_X == 0xFFFFFFFF || delivery_X == 0) delivery_X = 1;
   delivery_LenR = delivery_N * delivery_X;
+  uint32_t old_N = delivery_N;
   while (fuzz_size < delivery_LenR && delivery_N > 1) {
     delivery_N--;
     delivery_LenR = delivery_N * delivery_X;
   }
+  if (old_N != delivery_N) {
+    delivery_log("INIT_DEGRADE old_N=%u new_N=%u X=%u LenR=%u fuzz_size=%ld fuzz_cursor=%ld",
+                 old_N, delivery_N, delivery_X, delivery_LenR,
+                 fuzz_size, fuzz_cursor);
+  }
   delivery_LenFI = fuzz_size - delivery_LenR;
-  printf("[INIT_BUDGET] N=%d X=%d LenR=%d LenFI=%d fuzz_size=%ld\n",
-         delivery_N, delivery_X, delivery_LenR, delivery_LenFI, fuzz_size);
+  delivery_log("INIT N=%u X=%u LenR=%u LenFI=%d fuzz_size=%ld fuzz_cursor=%ld",
+               delivery_N, delivery_X, delivery_LenR, delivery_LenFI,
+               fuzz_size, fuzz_cursor);
 }
 
 // 计算本次投递长度 LenSI（ 行 17-26）
@@ -1816,12 +2104,28 @@ int compute_delivery_size(DataTracker *dt) {
   int32_t len_fi = delivery_LenFI;                                    // LenFI
   uint32_t X      = delivery_X > 0 ? delivery_X : 1;
   uint32_t low_p  = dt->buffer_min_len > 0 ? dt->buffer_min_len : 1; // LOWp
-  if (low_p > 1 && low_p < 4) low_p = 4;  // 原版阈值 clamp
   uint32_t up_p   = dt->buffer_len;                                   // UPp
+  if (low_p > 1 && low_p < 4 && up_p >= 4) low_p = 4;  // 原版阈值 clamp
+  if (up_p < low_p) {
+    delivery_log("COMPUTE_SKIP dr=0x%x reason=invalid_bounds low=%u up=%u LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, low_p, up_p, len_fi, delivery_LenR, X,
+                 fuzz_cursor, fuzz_size);
+    return 0;
+  }
 
   //  行 14
-  if (len_fi + delivery_LenR == 0) return 0;
-  if (up_p == low_p) return up_p;
+  if (len_fi + delivery_LenR == 0) {
+    delivery_log("COMPUTE_SKIP dr=0x%x reason=budget_empty low=%u up=%u LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, low_p, up_p, len_fi, delivery_LenR, X,
+                 fuzz_cursor, fuzz_size);
+    return 0;
+  }
+  if (up_p == low_p) {
+    delivery_log("COMPUTE dr=0x%x branch=fixed plan=%u low=%u up=%u LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, up_p, low_p, up_p, len_fi, delivery_LenR, X,
+                 fuzz_cursor, fuzz_size);
+    return up_p;
+  }
 
   //  行 17: Δ = LenFI + X - LOWp
   int delta = (int)(len_fi + X) - (int)low_p;
@@ -1829,18 +2133,19 @@ int compute_delivery_size(DataTracker *dt) {
   if (delta <= 0) {
     //  行 18-20: LenSI = LOWp, 补零 |Δ| 字节
     len_si = (int)low_p;
-    printf("[DELIVERY] Δ=%d≤0 → LenSI=LOWp=%d (LenFI=%d X=%d LOWp=%d)\n",
-           delta, len_si, len_fi, X, low_p);
+    delivery_log("COMPUTE dr=0x%x branch=base delta=%d plan=%d low=%u up=%u LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, delta, len_si, low_p, up_p, len_fi,
+                 delivery_LenR, X, fuzz_cursor, fuzz_size);
   } else {
     //  行 23-24: LenSI = Rand(FI[Pos]) mod t + LOWp
     uint32_t upper = (len_fi + X < up_p) ? (len_fi + X) : up_p;
-    int t = (int)upper - (int)low_p;
+    int t = (int)upper - (int)low_p + 1;
     uint32_t seed = (fuzz_cursor < fuzz_size) ? fuzz[fuzz_cursor] : 0;
     len_si = (seed % t) + low_p;
-    printf("[DELIVERY] Δ=%d>0 → LenSI=%d range=[%d,%d] seed=fuzz[%ld]=%u "
-           "(LenFI=%d X=%d UPp=%d)\n",
-           delta, len_si, low_p, upper, fuzz_cursor, seed,
-           len_fi, X, up_p);
+    delivery_log("COMPUTE dr=0x%x branch=random delta=%d plan=%d range=[%u,%u] seed=%u seed_pos=%ld LenFI=%d LenR=%u X=%u up=%u cursor=%ld fuzz_size=%ld",
+                 dt->dr, delta, len_si, low_p, upper, seed,
+                 fuzz_cursor, len_fi, delivery_LenR, X, up_p,
+                 fuzz_cursor, fuzz_size);
   }
   return len_si;
 }
@@ -1857,56 +2162,21 @@ bool is_irq_managed_by_dt(int irq_num) {
 // ====== 替换结束 ======
 
 // 用于检测是否存在头尾指针并且判断是否相等
-bool is_head_tail_equal(void *uc, DataTracker *dt) {
-  if (dt->rx_head == 0 || dt->rx_tail == 0) {
-    return false;
-  }
-  short head_byte;
-  short tail_byte;
-
-  head_byte = uc_mem_read_offset_one_byte(uc, dt->rx_head);
-  tail_byte = uc_mem_read_offset_one_byte(uc, dt->rx_tail);
-  if (head_byte != 0 || tail_byte != 0) {
-    char buf[100];
-    sprintf(buf, "head_byte = %d, tail_byte = %d\n", head_byte, tail_byte);
-    my_debug_log(buf);
-  }
-  int head_offset = head_byte % dt->buffer_len;
-  int tail_offset = tail_byte % dt->buffer_len;
-
-  return head_offset == tail_offset;
-}
-
-short uc_mem_read_offset_one_byte(uc_engine *uc, uint64_t addr) {
-  short offset; // To store the byte read from memory
-  uc_err err;
-  err = uc_mem_read(uc, addr, &offset, sizeof(offset));
-  if (err) {
-    fprintf(stderr, "Failed to read memory at address 0x%" PRIx64 "\n", addr);
-    return -1;
-  }
-  return offset;
-}
-
 // Function to fill data from fuzz input into DataTracker's FIFO
 // Fills exactly container_len bytes, zero-padding if fuzz is exhausted
 int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
   size_t remain = (fuzz_size > fuzz_cursor) ? (fuzz_size - fuzz_cursor) : 0;
 
   if (remain <= 0) {
-    printf("fill data called\n");
+    delivery_log("FILL_SKIP dr=0x%x reason=no_input plan=%zu cursor=%ld fuzz_size=%ld",
+                 dt ? dt->dr : 0, container_len, fuzz_cursor, fuzz_size);
     // do_exit(uc, UC_ERR_OK);
     return 0;
   }
 
   int actual_len = (remain < container_len) ? (int)remain : (int)container_len;
   int padding    = (int)container_len - actual_len;
-
-  printf("[FILL] dt→fifo[%d]B: actual=%dB from fuzz[%ld], pad=%dB, "
-         "cursor %ld→%ld\n",
-         (int)container_len, actual_len, fuzz_cursor, padding,
-         fuzz_cursor, fuzz_cursor + actual_len);
-
+  long cursor_before = fuzz_cursor;
   uint8_t data_input[container_len];
   memset(data_input, 0, container_len);
 
@@ -1916,7 +2186,9 @@ int fill_data(DataTracker *dt, size_t container_len, uc_engine *uc) {
   }
 
   int write_len = write_byte_to_data_reg(dt, data_input, container_len, uc);
-  global_partion += write_len;
+  delivery_log("FILL dr=0x%x plan=%zu actual=%d pad=%d cursor_before=%ld cursor_after=%ld fuzz_size=%ld write_len=%d",
+               dt ? dt->dr : 0, container_len, actual_len, padding,
+               cursor_before, fuzz_cursor, fuzz_size, write_len);
   return write_len;
 }
 
@@ -1925,6 +2197,9 @@ int write_byte_to_data_reg(DataTracker *dt, uint8_t *data, int len,
   memcpy(dt->fifo, data, len);                                                                                                                                                                                
   dt->fifo_head = len;    // 修复：应该是 len 而非 len-1                                   
   dt->fifo_tail = 0;                                                                                                                                                                                          
+  delivery_log("FIFO_WRITE dr=0x%x len=%d head=%d tail=%d",
+               dt ? dt->dr : 0, len,
+               dt ? dt->fifo_head : 0, dt ? dt->fifo_tail : 0);
   return len;     
 }
 
@@ -1948,6 +2223,37 @@ void my_debug_log(const char *format) {
   return;
 }
 
+static int get_irq_num_from_vector_table(uc_engine *uc, uint32_t irq_pc) {
+  uint32_t vtor = 0;
+  if (uc_mem_read(uc, SYSCTL_VTOR, &vtor, sizeof(vtor)) != UC_ERR_OK ||
+      vtor == 0) {
+    vtor = vtor_num;
+  }
+  if (vtor == 0 || irq_pc == 0) return 0;
+
+  uint32_t target = irq_pc & ~1u;
+  for (int irq_num = EXCEPTION_NO_EXTERNAL_START;
+       irq_num < NVIC_NUM_SUPPORTED_INTERRUPTS; irq_num++) {
+    uint32_t handler_val = 0;
+    uint64_t handler_addr = (uint64_t)vtor + ((uint64_t)irq_num * 4);
+    if (uc_mem_read(uc, handler_addr, &handler_val,
+                    sizeof(handler_val)) != UC_ERR_OK) {
+      continue;
+    }
+    if (handler_val == 0 || handler_val == 0xffffffff) continue;
+
+    uint32_t handler_pc = handler_val & ~1u;
+    int diff = abs((int)handler_pc - (int)target);
+    if (diff <= 4) {
+      vtor_num = vtor;
+      return irq_num;
+    }
+  }
+
+  return 0;
+}
+
+// Returns the matching IRQ number, or 0 if no enabled IRQ matches irq_pc.
 int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   int num_enabled = get_num_enabled();
   int irq_num = 0;
@@ -1976,10 +2282,34 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   return 0;
 }
 
+static int resolve_irq_num_for_pc(uc_engine *uc, uint32_t irq_pc,
+                                  const char **source) {
+  if (source) *source = "none";
+  if (irq_pc == 0 || irq_pc == 256) return 0;
+  if (irq_pc < 256) {
+    if (source) *source = "direct";
+    return (int)irq_pc;
+  }
+
+  int resolved = get_irq_num_from_vector_table(uc, irq_pc);
+  if (resolved > 0) {
+    if (source) *source = "vector";
+    return resolved;
+  }
+
+  resolved = get_match_irq_num(uc, irq_pc);
+  if (resolved > 0) {
+    if (source) *source = "enabled";
+    return resolved;
+  }
+
+  return 0;
+}
+
 void reset_datatrcker_and_global_vars() {
-  global_partion = 0;
   read_times = 0;
   delivery_LenFI = 0;
+  g_delivery_budget_closed = false;
   for (int i = 0; i < main_dt_array_index; i++) {
     main_dt_array[i].fifo_head = 0;
     main_dt_array[i].fifo_tail = 0;
@@ -2025,8 +2355,8 @@ int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
     pending_dt_array = calloc(MAX_PENDING_DRS, sizeof(DataTracker));
   }
 
-  printf("[STORE_DR_SR] stored %d DRs, %d SRs, json=%s, vtor=0x%x\n",
-         g_num_dr_addrs, g_num_sr_addrs, g_json_file_path, vtor_num);
+  dt_learning_log("[STORE_DR_SR] drs=%d srs=%d json=%s vtor=0x%x",
+                  g_num_dr_addrs, g_num_sr_addrs, g_json_file_path, vtor_num);
   return 0;
 }
 
@@ -2034,13 +2364,8 @@ int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
 
 // Cleanup all avail and pending hooks from previous round
 void cleanup_avail_and_pending_hooks(uc_engine *uc) {
-  for (int i = 0; i < g_num_avail_hooks; i++) {
-    if (g_avail_hook_handles[i]) {
-      uc_hook_del(uc, g_avail_hook_handles[i]);
-      g_avail_hook_handles[i] = 0;
-    }
-  }
   g_num_avail_hooks = 0;
+  memset(g_avail_dispatch_entries, 0, sizeof(g_avail_dispatch_entries));
 
   for (int i = 0; i < g_num_pending_hooks; i++) {
     if (g_pending_hook_handles[i]) {
@@ -2051,10 +2376,6 @@ void cleanup_avail_and_pending_hooks(uc_engine *uc) {
   g_num_pending_hooks = 0;
 
   // Clean up any lingering discovery hooks
-  if (g_discovery_mem_read_hook) {
-    uc_hook_del(uc, g_discovery_mem_read_hook);
-    g_discovery_mem_read_hook = 0;
-  }
   if (g_discovery_mem_write_hook) {
     uc_hook_del(uc, g_discovery_mem_write_hook);
     g_discovery_mem_write_hook = 0;
@@ -2063,12 +2384,24 @@ void cleanup_avail_and_pending_hooks(uc_engine *uc) {
     uc_hook_del(uc, g_discovery_buffer_read_hook);
     g_discovery_buffer_read_hook = 0;
   }
-  if (g_chain_block_hook) {
-    uc_hook_del(uc, g_chain_block_hook);
-    g_chain_block_hook = 0;
-  }
   g_in_discovery_mode = false;
-  g_buffer_fill_active = false;
+
+  // Clean up post-static-analysis bounds learning hooks.
+  if (g_bounds_write_hook) { uc_hook_del(uc, g_bounds_write_hook); g_bounds_write_hook = 0; }
+  memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
+  g_bounds_num_diag_hooks = 0;
+#if BOUNDS_PC_TRACE_ENABLE
+  if (g_bounds_pc_trace_fp) {
+    fprintf(g_bounds_pc_trace_fp,
+            "[ROUND_END] round=%u count=%u avail_hit=%d pends=%d\n",
+            g_bounds_pc_trace_round,
+            g_bounds_pc_trace_count,
+            g_bounds_avail_hit ? 1 : 0,
+            g_bounds_irq_pend_count);
+    fclose(g_bounds_pc_trace_fp);
+    g_bounds_pc_trace_fp = NULL;
+  }
+#endif
 }
 
 // Reset all tracker state for re-population
@@ -2093,29 +2426,48 @@ void reset_all_tracker_state(void) {
   g_discovery_irq_pc = 0;
   g_discovery_addr_count = 0;
   g_discovery_buffer_addr = 0;
-  g_discovery_mem_read_hook = 0;
   g_discovery_mem_write_hook = 0;
   g_discovery_occurred = false;
 
-  // Reset fill + read_pc state
+  // Reset read_pc discovery state
   g_discovery_read_pc = 0;
   g_discovery_callread_pc = 0;
   g_discovery_buffer_read_hook = 0;
   g_read_pc_done = false;
-  g_buffer_fill_active = false;
-  g_buffer_fill_done = false;
-  g_fill_irq_num = 0;
-  g_chain_min = 0;
-  g_chain_max = 0;
-  g_chain_extend_count = 0;
-  g_consecutive_miss = 0;
-  g_chain_idle_bb = 0;
-  g_chain_block_hook = 0;
-  g_bufmin_state = 0;
-  g_bufmin_count = 0;
-  g_bufmin_avail_hook = 0;
-  g_bufmin_finish_hook = 0;
-  g_bufmin_read_hook = 0;
+
+  // Reset post-static-analysis bounds learning state.
+  g_bounds_state = 0;
+  g_bounds_dt_idx = -1;
+  g_bounds_dt_dr = 0;
+  g_bounds_irq = 0;
+  g_bounds_avail_hit = false;
+  g_bounds_avail_pass_next = false;
+  g_bounds_fifo_seeded = false;
+  g_bounds_chain_started = false;
+  g_bounds_chain_min = 0;
+  g_bounds_chain_max = 0;
+  g_bounds_miss_count = 0;
+  g_bounds_irq_pend_count = 0;
+  g_bounds_dr_read_log_count = 0;
+  g_bounds_taint_write_log_count = 0;
+  g_bounds_need_upper = false;
+  g_bounds_need_min = false;
+  g_bounds_upper_done = false;
+  g_bounds_upper_len = 0;
+  g_bounds_min_done = false;
+  g_bounds_min_len = 0;
+  g_bounds_preparing_exit = false;
+  g_bounds_consumer_log_count = 0;
+  g_bounds_read_entry_guess_pc = 0;
+  g_bounds_write_hook = 0;
+  memset(g_bounds_consume_pcs, 0, sizeof(g_bounds_consume_pcs));
+  g_bounds_num_consume_pcs = 0;
+  memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
+  g_bounds_num_diag_hooks = 0;
+#if BOUNDS_PC_TRACE_ENABLE
+  g_bounds_pc_trace_fp = NULL;
+  g_bounds_pc_trace_count = 0;
+#endif
 
   reset_datatrcker_and_global_vars();
 }
@@ -2148,6 +2500,34 @@ static uint32_t json_extract_int(const char *json_obj, const char *key) {
     sscanf(pos, "%d", &val);
     return (uint32_t)val;
   }
+}
+
+// Parse a JSON fragment like "[\"0x804fcde\", \"0x804fcef\"]" into an array of uint32 PCs.
+// Handles quoted/unquoted hex (0x...), skips whitespace/commas/brackets, filters 0 values.
+// Returns the number of PCs extracted (capped at `max`).
+static int parse_consume_pcs(const char *json, uint32_t *out, int max) {
+  if (!json || !out || max <= 0) return 0;
+  int n = 0;
+  const char *p = json;
+  while (*p && n < max) {
+    // Skip separators / decoration
+    while (*p && (*p == '"' || *p == ' ' || *p == ',' ||
+                  *p == '[' || *p == ']' || *p == '\t' ||
+                  *p == '\n' || *p == '\r')) {
+      p++;
+    }
+    if (!*p) break;
+    // Recognise 0x... only; ignore decimals to stay safe
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+      uint32_t pc = 0;
+      if (sscanf(p, "%x", &pc) == 1 && pc != 0) {
+        out[n++] = pc;
+      }
+    }
+    // Advance to next separator
+    while (*p && *p != ',' && *p != ']' && *p != '"') p++;
+  }
+  return n;
 }
 
 // Reload DT arrays from JSON file
@@ -2302,8 +2682,8 @@ void json_reload_dt_arrays(uc_engine *uc) {
 
   free(buf);
 
-  printf("[JSON_RELOAD] loaded %d irq_dt + %d main_dt\n",
-         irq_dt_array_index, main_dt_array_index);
+  dt_learning_log("[JSON_RELOAD] irq_dt=%d main_dt=%d",
+                  irq_dt_array_index, main_dt_array_index);
 }
 
 // Check if a DR address is already managed by a known DT
@@ -2358,9 +2738,9 @@ void rebuild_pending_drs(uc_engine *uc) {
     }
 
     pending_dt_array_index++;
-    printf("[PENDING] DR 0x%x: placeholder created, magic=fifo[0..3]=0xAA\n", dr);
+    dt_learning_log("[PENDING] dr=0x%x placeholder created", dr);
   }
-  printf("[PENDING] Total %d pending DRs with monitor hooks\n", pending_dt_array_index);
+  dt_learning_log("[PENDING] total=%d", pending_dt_array_index);
 }
 
 // Per-round reload: called after restore_snapshot when discovery occurred
@@ -2377,44 +2757,24 @@ int per_round_reload(uc_engine *uc) {
   // 3. Read JSON & fill known DT arrays
   json_reload_dt_arrays(uc);
 
-  // 4. Add avail hooks for known DTs
+  // 4. Add normal avail hooks for DTs that are already complete. Incomplete
+  // irq_dt entries are intentionally skipped here and handled by bounds
+  // learning below.
   ufuzz_adapter_add_avail_hook(uc);
 
-  // 5. Start buffer_min_len inference for first DT that needs it
-  if (g_bufmin_state == 0) {
-    for (int i = 0; i < irq_dt_array_index; i++) {
-      DataTracker *dt = &irq_dt_array[i];
-      if (dt->avail_pc && dt->buffer_min_len == 0) dt->buffer_min_len = 1;
-      // if (dt->avail_pc && dt->buffer_min_len == 0) {
-      //   g_bufmin_dt_idx = i;
-      //   g_bufmin_state = 1;
-      //   g_bufmin_count = 0;
-      //   g_bufmin_irq = 0;  // resolved lazily on first avail hit
-      //   g_bufmin_read_off = dt->buffer_addr;
-      //   // Remove fuzzing avail hooks, replace with learning hook
-      //   for (int j = 0; j < g_num_avail_hooks; j++)
-      //     uc_hook_del(uc, g_avail_hook_handles[j]);
-      //   g_num_avail_hooks = 0;
-      //   uc_hook_add(uc, &g_bufmin_avail_hook, UC_HOOK_CODE,
-      //               hook_bufmin_avail, NULL,
-      //               dt->avail_pc, dt->avail_pc);
-      //   // bufmin shepherd removed — learning persists across rounds
-      //   printf("[BUFMIN] learning DT[%d]: avail_pc=0x%x irq=%d "
-      //          "buf=0x%x callread=0x%x\n",
-      //          i, dt->avail_pc, g_bufmin_irq,
-      //          dt->buffer_addr, dt->callread_pc);
-      //   fflush(stdout);
-      //   FILE *fp = fopen("/tmp/bufmin.log", "w");
-      //   if (fp) { fprintf(fp, "bufmin_start dt=%d avail=0x%x\n", i, dt->avail_pc); fclose(fp); }
-      //   break;
-      // }
-    }
+  // 5. Prefer post-static-analysis bounds learning for incomplete irq_dt
+  // entries. Pending DR discovery remains disabled while bounds is active, but
+  // complete DTs keep their normal avail hooks installed.
+  if (start_bounds_learning_if_needed(uc)) {
+    printf("[PER_ROUND] Bounds learning active: %d main_dt, %d irq_dt, %d pending\n",
+           main_dt_array_index, irq_dt_array_index, pending_dt_array_index);
+    return 0;
   }
 
-  // 5. Create placeholder DTs for unknown DRs
+  // 6. Create placeholder DTs for unknown DRs
   rebuild_pending_drs(uc);
 
-  // // 6. Init delivery budget
+  // // Init delivery budget
   // init_delivery_budget();
 
   printf("[PER_ROUND] Reload complete: %d main_dt, %d irq_dt, %d pending\n",
@@ -2497,12 +2857,33 @@ static int write_full_json(void) {
   fprintf(fp, "}\n");
 
   fclose(fp);
-  printf("[JSON_WRITE] Wrote %d irq_dt + %d main_dt to %s\n",
-         irq_dt_array_index, main_dt_array_index, g_json_file_path);
+  dt_learning_log("[JSON_WRITE] irq_dt=%d main_dt=%d path=%s",
+                  irq_dt_array_index, main_dt_array_index, g_json_file_path);
   return 0;
 }
 
 // ====== Ghidra callback management ======
+
+void set_code_hook_range(uint64_t begin, uint64_t size) {
+  if (size == 0) {
+    dt_learning_log("[BOUNDS] CODE_HOOK_RANGE_KEEP begin=0x%llx end=0x%llx reason=zero_size",
+                    (unsigned long long)g_code_hook_begin,
+                    (unsigned long long)g_code_hook_end);
+    return;
+  }
+
+  g_code_hook_begin = begin;
+  if (UINT64_MAX - begin < size - 1) {
+    g_code_hook_end = UINT64_MAX;
+  } else {
+    g_code_hook_end = begin + size - 1;
+  }
+
+  dt_learning_log("[BOUNDS] CODE_HOOK_RANGE_SET begin=0x%llx end=0x%llx size=0x%llx",
+                  (unsigned long long)g_code_hook_begin,
+                  (unsigned long long)g_code_hook_end,
+                  (unsigned long long)size);
+}
 
 void set_ghidra_callback(void *cb) {
     g_ghidra_callback = cb;
@@ -2528,8 +2909,8 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
 
   if (ipsr != 0) {
     // === IRQ context → interrupt-read type ===
-    printf("[DISCOVERY] DR 0x%x read in IRQ (ipsr=0x%x, pc=0x%x)\n",
-           dr, ipsr, pc);
+    dt_learning_log("[DISCOVERY] IRQ_DR_READ dr=0x%x ipsr=0x%x pc=0x%x",
+                    dr, ipsr, pc);
 
     g_discovery_dr = dr;
     g_discovery_taint = 0xAA;  // magic token byte, not full word
@@ -2545,8 +2926,8 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     uc_mem_read(uc, handler_addr, &handler_val, sizeof(handler_val));
     g_discovery_irq_pc = handler_val - 1;  // thumb bit adjustment
 
-    printf("[DISCOVERY] irq_pc=0x%x (from VTOR=0x%x + ipsr=%d*4)\n",
-           g_discovery_irq_pc, vtor, ipsr);
+    dt_learning_log("[DISCOVERY] IRQ_PC dr=0x%x irq_pc=0x%x vtor=0x%x ipsr=0x%x",
+                    dr, g_discovery_irq_pc, vtor, ipsr);
 
     // // Remove ALL pending DR hooks to prevent interference this round.
     // // They will be properly rebuilt by per_round_reload next round.
@@ -2561,8 +2942,6 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     // Add global discovery tracking hooks
     uc_hook_add(uc, &g_discovery_mem_write_hook, UC_HOOK_MEM_WRITE,
                 hook_discovery_mem_write, NULL, 0, 0xFFFFFFFF);
-    uc_hook_add(uc, &g_discovery_mem_read_hook, UC_HOOK_MEM_READ_AFTER,
-                hook_discovery_mem_read, NULL, 0, 0xFFFFFFFF);
 
     g_in_discovery_mode = true;
     g_discovery_addr_count = 0;
@@ -2570,7 +2949,7 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
 
   } else {
     // === Main loop context → firmware-read type (main_read) ===
-    printf("[DISCOVERY] DR 0x%x read in MAIN (pc=0x%x)\n", dr, pc);
+    dt_learning_log("[DISCOVERY] MAIN_DR_READ dr=0x%x pc=0x%x", dr, pc);
 
     uint32_t lr = 0;
     uc_reg_read(uc, UC_ARM_REG_LR, &lr);
@@ -2593,8 +2972,8 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     }
     main_dt_array_index++;
 
-    printf("[DISCOVERY] main_read DT created: dr=0x%x read_pc=0x%x callread_pc=0x%x\n",
-           dr, pc, lr - 1);
+    dt_learning_log("[DISCOVERY] MAIN_DT dr=0x%x read_pc=0x%x callread_pc=0x%x",
+                    dr, pc, lr);
 
     // Signal Ghidra daemon: write JSON path to pending file
     if (g_ghidra_callback) {
@@ -2602,6 +2981,8 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
       if (fd >= 0) {
         write(fd, g_json_file_path, strlen(g_json_file_path));
         close(fd);
+        dt_learning_log("[GHIDRA_PENDING] path=%s reason=main_dt dr=0x%x",
+                        g_json_file_path, dr);
       }
     }
 
@@ -2628,115 +3009,30 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
       // Always track write addresses (Phase 1 buffer-addr discovery)
       if (g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
         g_discovery_addr_list[g_discovery_addr_count++] = (uint32_t)address;
-        printf("[DISCOVERY] Tracked write #%d: addr=0x%x val=0x%x\n",
-               g_discovery_addr_count, (uint32_t)address, (uint32_t)value);
-      }
-
-      // Buffer fill: chain tracking (+1, parallel with read_pc)
-      if (g_buffer_fill_active && !g_buffer_fill_done) {
-        if (chain_try_extend((uint32_t)address)) {
-          g_chain_idle_bb = 0;
-          g_consecutive_miss = 0;
-        } else if (++g_consecutive_miss >= 5 && g_chain_extend_count > 1) {
-          printf("[DISCOVERY] FILL: done (%d consecutive misses, %d ext). "
-                 "min=0x%x max=0x%x len=%d\n",
-                 g_consecutive_miss, g_chain_extend_count,
-                 g_chain_min, g_chain_max,
-                 g_chain_max - g_chain_min + 1);
-          g_buffer_fill_done = true;
-          if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
-          if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
-          if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
-        }
+        dt_learning_log("[DISCOVERY] TAINT_WRITE #%d addr=0x%x val=0x%x",
+                        g_discovery_addr_count, (uint32_t)address,
+                        (uint32_t)value);
       }
     }
   } else {
     // ---- In main loop context ----
     if (g_discovery_addr_count > 0 && g_discovery_buffer_addr == 0) {
-      // buffer_addr just found → start parallel fill + read_pc capture
+      // buffer_addr just found; capture the main-loop read site next.
       g_discovery_buffer_addr =
           g_discovery_addr_list[g_discovery_addr_count - 1];
-      printf("[DISCOVERY] IRQ exited. Buffer addr = 0x%x (from %d writes)\n",
-             g_discovery_buffer_addr, g_discovery_addr_count);
+      dt_learning_log("[DISCOVERY] BUFFER_ADDR dr=0x%x buf=0x%x writes=%d",
+                      g_discovery_dr, g_discovery_buffer_addr,
+                      g_discovery_addr_count);
 
-      // ---- start buffer fill (refill + manual IRQ) ----
-      g_buffer_fill_active = true;
-      g_chain_min = g_discovery_buffer_addr;
-      g_chain_max = g_discovery_buffer_addr;
-      // start from buffer_addr, like semu_fuzz's offset=buffer_addr
-      g_chain_extend_count = 1;   // Phase 0 already wrote buffer_addr
-      g_consecutive_miss = 0;
-      g_chain_idle_bb = 0;
-      g_fill_irq_num = get_match_irq_num(uc, g_discovery_irq_pc);
-
-      // Prime DT FIFO & pend IRQ to kick off fill loop
-      {
-        khint_t k = kh_get(dr_dt, hash_table, g_discovery_dr);
-        if (k != kh_end(hash_table)) {
-          DataTracker *pdt = kh_value(hash_table, k);
-          memset(pdt->fifo, 0xAA, 1);
-          pdt->fifo_head = 1;
-          pdt->fifo_tail = 0;
-        }
-      }
-      if (g_fill_irq_num) {
-        nvic_set_pending(uc, g_fill_irq_num, false);
-      }
-      printf("[DISCOVERY] FILL: started. irq=%d, pend sent\n", g_fill_irq_num);
-
-      // ---- start chain convergence block hook ----
-      uc_hook_add(uc, &g_chain_block_hook, UC_HOOK_BLOCK,
-                  hook_chain_block, NULL, 1, 0);
-
-      // ---- hook buffer read for parallel read_pc capture ----
+      // Static analysis needs buffer_addr plus the main-loop read site.
+      // Upper/lower bounds are learned later, after Ghidra fills avail_pc and
+      // consume_pc_set, so do not start chain fill in discovery anymore.
       uc_hook_add(uc, &g_discovery_buffer_read_hook, UC_HOOK_MEM_READ_AFTER,
                   hook_phase1_buffer_read, NULL,
                   g_discovery_buffer_addr, g_discovery_buffer_addr);
     }
 
-    // ---- semu-fuzz end condition: ISR exited, fill was active ----
-    // During fill loop, nvic_set_pending re-enters ISR immediately,
-    // so ipsr==0 only fires when fill stops (buffer full / ISR won't re-enter).
-    if (g_buffer_fill_active && !g_buffer_fill_done) {
-      if (g_chain_extend_count > 1) {
-        printf("[DISCOVERY] FILL: done (ISR exited, %d extensions). "
-               "min=0x%x max=0x%x len=%d\n",
-               g_chain_extend_count, g_chain_min, g_chain_max,
-               g_chain_max - g_chain_min + 1);
-        g_buffer_fill_done = true;
-        // Delete global hooks immediately (like semu_fuzz), read_pc uses its own hook
-        if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
-        if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
-        if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
-      }
-    }
     try_finalize(uc);
-  }
-}
-
-// UC_HOOK_MEM_READ_AFTER callback during discovery — update taint
-void hook_discovery_mem_read(uc_engine *uc, uc_mem_type type,
-    uint64_t address, int size, int64_t value, void *user_data) {
-
-  if (!g_in_discovery_mode) return;
-
-  if (address == g_discovery_dr) {
-    g_discovery_taint = 0xAA;
-    printf("[DISCOVERY] Taint updated: DR 0x%x re-read\n", (uint32_t)address);
-
-    // Buffer fill: refill DT FIFO and pend IRQ for next read
-    if (g_buffer_fill_active && !g_buffer_fill_done) {
-      khint_t k = kh_get(dr_dt, hash_table, (uint32_t)address);
-      if (k != kh_end(hash_table)) {
-        DataTracker *dt = kh_value(hash_table, k);
-        memset(dt->fifo, 0xAA, 1);
-        dt->fifo_head = 1;
-        dt->fifo_tail = 0;
-      }
-      if (g_fill_irq_num) {
-        nvic_set_pending(uc, g_fill_irq_num, false);
-      }
-    }
   }
 }
 
@@ -2744,7 +3040,7 @@ void hook_discovery_mem_read(uc_engine *uc, uc_mem_type type,
 
 // Fires when main loop reads the discovered buffer address.
 // Captures read_pc (PC at buffer read) and callread_pc (LR = caller).
-// Runs in PARALLEL with buffer fill (refill + manual IRQ loop).
+// Bounds are inferred later, after static analysis supplies avail/consume PCs.
 void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data) {
 
@@ -2769,146 +3065,612 @@ void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     g_discovery_buffer_read_hook = 0;
   }
 
-  printf("[DISCOVERY] read_pc=0x%x callread_pc=0x%x (lr=0x%x)\n",
-         g_discovery_read_pc, g_discovery_callread_pc, lr);
+  dt_learning_log("[DISCOVERY] BUFFER_READ_PC dr=0x%x read_pc=0x%x callread_pc=0x%x",
+                  g_discovery_dr, g_discovery_read_pc,
+                  g_discovery_callread_pc);
 
   try_finalize(uc);
 }
 
-// ====== Buffer fill: chain tracking ======
+// ====== Post-static-analysis buffer bounds inference ======
 
-// Semu-fuzz style: addr == chain_max + 1. Noise is silently ignored.
-static bool chain_try_extend(uint32_t addr) {
-  if (addr == g_chain_max + 1) {
-    g_chain_max = addr;
-    g_chain_extend_count++;
-    printf("[DISCOVERY] FILL: chain +1 → 0x%x (#%d)\n", addr, g_chain_extend_count);
-    return true;
+static void bounds_cleanup_hooks(uc_engine *uc) {
+  if (g_bounds_write_hook) { uc_hook_del(uc, g_bounds_write_hook); g_bounds_write_hook = 0; }
+  (void)uc;
+  memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
+  g_bounds_num_diag_hooks = 0;
+}
+
+static DataTracker *bounds_find_dt(void) {
+  if (g_bounds_dt_dr == 0) return NULL;
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    if (irq_dt_array[i].dr == g_bounds_dt_dr) {
+      return &irq_dt_array[i];
+    }
+  }
+  return NULL;
+}
+
+#if DT_DIAG_HOOK_ENABLE
+static bool bounds_consumer_log_allowed(void) {
+  if (g_bounds_consumer_log_count >= BOUNDS_CONSUMER_LOG_LIMIT) return false;
+  g_bounds_consumer_log_count++;
+  return true;
+}
+
+static bool bounds_read_u32(uc_engine *uc, uint32_t addr, uint32_t *out) {
+  if (!addr || !out) return false;
+  *out = 0;
+  return uc_mem_read(uc, addr, out, sizeof(*out)) == UC_ERR_OK;
+}
+
+static bool bounds_read_u16(uc_engine *uc, uint32_t addr, uint16_t *out) {
+  if (!addr || !out) return false;
+  *out = 0;
+  return uc_mem_read(uc, addr, out, sizeof(*out)) == UC_ERR_OK;
+}
+
+static bool bounds_read_u8(uc_engine *uc, uint32_t addr, uint8_t *out) {
+  if (!addr || !out) return false;
+  *out = 0;
+  return uc_mem_read(uc, addr, out, sizeof(*out)) == UC_ERR_OK;
+}
+
+static void bounds_add_diag_hook(uc_engine *uc, uint32_t pc,
+    uc_cb_hookcode_t cb, const char *name) {
+  if (!pc || !cb) return;
+  if (g_bounds_num_diag_hooks >= BOUNDS_DIAG_HOOK_MAX) {
+    dt_learning_log("[BOUNDS] DIAG_HOOK_SKIP name=%s pc=0x%x reason=full",
+                    name ? name : "unknown", pc);
+    return;
+  }
+
+  (void)uc;
+  g_bounds_diag_entries[g_bounds_num_diag_hooks++] =
+      (BoundsDiagDispatchEntry){ .pc = pc, .cb = cb, .name = name };
+  dt_learning_log("[BOUNDS] DIAG_DISPATCH_ADD name=%s pc=0x%x",
+                  name ? name : "unknown", pc);
+}
+
+static void hook_bounds_avail_return(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t r0 = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_R0, &r0);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  DataTracker *dt = bounds_find_dt();
+
+  dt_learning_log("[BOUNDS] AVAIL_RET pc=0x%x ipsr=0x%x r0=0x%x dr=0x%x pends=%d upper_done=%d min_done=%d",
+                  (uint32_t)address, ipsr, r0, dt ? dt->dr : g_bounds_dt_dr,
+                  g_bounds_irq_pend_count,
+                  g_bounds_upper_done ? 1 : 0,
+                  g_bounds_min_done ? 1 : 0);
+}
+
+static void hook_bounds_process_call(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t r0 = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_R0, &r0);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  dt_learning_log("[BOUNDS] PROCESS_INPUT_CALL pc=0x%x ipsr=0x%x r0=0x%x pends=%d",
+                  (uint32_t)address, ipsr, r0, g_bounds_irq_pend_count);
+}
+
+static void hook_bounds_callread_before(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t r0 = 0;
+  uint32_t r3 = 0;
+  uint32_t lr = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_R0, &r0);
+  uc_reg_read(uc, UC_ARM_REG_R3, &r3);
+  uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  dt_learning_log("[BOUNDS] CALLREAD_BEFORE pc=0x%x ipsr=0x%x this=0x%x target=0x%x lr=0x%x pends=%d",
+                  (uint32_t)address, ipsr, r0, r3, lr,
+                  g_bounds_irq_pend_count);
+}
+
+static void hook_bounds_callread_return(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t r0 = 0;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_R0, &r0);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  dt_learning_log("[BOUNDS] CALLREAD_RET pc=0x%x ipsr=0x%x r0=0x%x empty=%d pends=%d",
+                  (uint32_t)address, ipsr, r0,
+                  r0 == 0xffffffffu ? 1 : 0,
+                  g_bounds_irq_pend_count);
+}
+
+static void hook_bounds_read_entry_guess(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t this_ptr = 0;
+  uint32_t ipsr = 0;
+  uint32_t buf = 0;
+  uint16_t head = 0;
+  uint16_t tail = 0;
+  uc_reg_read(uc, UC_ARM_REG_R0, &this_ptr);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  bool buf_ok = bounds_read_u32(uc, this_ptr + 0x130, &buf);
+  bool head_ok = bounds_read_u16(uc, this_ptr + 0x134, &head);
+  bool tail_ok = bounds_read_u16(uc, this_ptr + 0x136, &tail);
+  DataTracker *dt = bounds_find_dt();
+
+  dt_learning_log("[BOUNDS] READ_ENTRY_GUESS pc=0x%x ipsr=0x%x this=0x%x buf=0x%x buf_ok=%d head=%u head_ok=%d tail=%u tail_ok=%d empty=%d dt_buf=0x%x pends=%d",
+                  (uint32_t)address, ipsr, this_ptr,
+                  buf_ok ? buf : 0, buf_ok ? 1 : 0,
+                  head, head_ok ? 1 : 0,
+                  tail, tail_ok ? 1 : 0,
+                  (head_ok && tail_ok && head == tail) ? 1 : 0,
+                  dt ? dt->buffer_addr : 0,
+                  g_bounds_irq_pend_count);
+}
+
+static void hook_bounds_read_pc_diag(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_consumer_log_allowed()) return;
+
+  uint32_t r2 = 0;
+  uint32_t r3 = 0;
+  uint32_t ipsr = 0;
+  uint8_t byte = 0;
+  uc_reg_read(uc, UC_ARM_REG_R2, &r2);
+  uc_reg_read(uc, UC_ARM_REG_R3, &r3);
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  uint32_t read_addr = r2 + r3;
+  bool byte_ok = bounds_read_u8(uc, read_addr, &byte);
+  dt_learning_log("[BOUNDS] READ_PC_HIT pc=0x%x ipsr=0x%x buf_reg=0x%x tail_reg=%u read_addr=0x%x byte=0x%x byte_ok=%d pends=%d",
+                  (uint32_t)address, ipsr, r2, r3, read_addr,
+                  byte_ok ? byte : 0, byte_ok ? 1 : 0,
+                  g_bounds_irq_pend_count);
+}
+#endif
+
+static void bounds_fill_fifo(DataTracker *dt) {
+  memset(dt->fifo, 0xAA, BOUNDS_FIFO_SIZE);
+  dt->fifo_head = BOUNDS_FIFO_SIZE;
+  dt->fifo_tail = 0;
+  g_bounds_fifo_seeded = true;
+}
+
+static bool bounds_value_has_taint(int size, int64_t value) {
+  int width = size;
+  if (width <= 0) return false;
+  if (width > 8) width = 8;
+  for (int i = 0; i < width; i++) {
+    if (((uint64_t)value >> (i * 8) & 0xff) == 0xAA) {
+      return true;
+    }
   }
   return false;
 }
 
-// ====== Buffer minimum length inference (semu-fuzz: hook_func_got_buffer_min_len) ======
-
-// Called at avail_pc: put 1 byte into DT FIFO and pend IRQ.
-// Each invocation increments the counter.  First call also sets up finish + read-ptr hooks.
-static void hook_bufmin_avail(uc_engine *uc, uint64_t address, uint32_t size,
-    void *user_data) {
-
-  if (g_bufmin_state != 1) return;
-
-  // Lazy irq_num resolution (NVIC not yet configured at per_round_reload time)
-  if (!g_bufmin_irq && g_bufmin_dt_idx >= 0) {
-    g_bufmin_irq = get_match_irq_num(uc, irq_dt_array[g_bufmin_dt_idx].irq_pc);
-    if (g_bufmin_irq) irq_dt_array[g_bufmin_dt_idx].irq_num = g_bufmin_irq;
+static uint32_t bounds_current_len(void) {
+  if (!g_bounds_chain_started || g_bounds_chain_max < g_bounds_chain_min) {
+    return 0;
   }
-
-  // First time: set default, register finish + read-ptr hooks
-  if (!g_bufmin_finish_hook && g_bufmin_dt_idx >= 0) {
-    DataTracker *dt = &irq_dt_array[g_bufmin_dt_idx];
-    dt->buffer_min_len = 1;  // default minimum
-    if (dt->callread_pc) {
-      uc_hook_add(uc, &g_bufmin_finish_hook, UC_HOOK_CODE,
-                  hook_bufmin_finish, NULL,
-                  dt->callread_pc, dt->callread_pc);
-      printf("[BUFMIN] finish hook at callread_pc=0x%x\n", dt->callread_pc);
-    }
-    if (dt->buffer_addr) {
-      g_bufmin_read_off = dt->buffer_addr;
-      uc_hook_add(uc, &g_bufmin_read_hook, UC_HOOK_MEM_READ,
-                  hook_bufmin_read_ptr, NULL,
-                  dt->buffer_addr, dt->buffer_addr);
-      printf("[BUFMIN] read-ptr hook at buffer_addr=0x%x\n", dt->buffer_addr);
-    }
-  }
-
-  // Put 1 byte into DT FIFO and pend IRQ (capped at buffer_len)
-  if (g_bufmin_dt_idx >= 0) {
-    DataTracker *dt = &irq_dt_array[g_bufmin_dt_idx];
-    if (g_bufmin_count < dt->buffer_len) {
-      memset(dt->fifo, 0xAA, 1);
-      dt->fifo_head = 1;
-      dt->fifo_tail = 0;
-      g_bufmin_count++;
-      printf("[BUFMIN] avail hit #%d/%d\n", g_bufmin_count, dt->buffer_len);
-      if (g_bufmin_irq)
-        nvic_set_pending(uc, g_bufmin_irq, false);
-    } else {
-      printf("[BUFMIN] avail hit ignored (reached limit %d)\n", dt->buffer_len);
-    }
-  }
+  return g_bounds_chain_max - g_bounds_chain_min + 1;
 }
 
-// Called at callread_pc: check if bufmin learning is complete.
-static void hook_bufmin_finish(uc_engine *uc, uint64_t address, uint32_t size,
-    void *user_data) {
+static void bounds_reset_upper_chain(DataTracker *dt, const char *reason,
+                                     uint32_t upper) {
+  uint32_t old_min = g_bounds_chain_min;
+  uint32_t old_max = g_bounds_chain_max;
+  int old_misses = g_bounds_miss_count;
 
-  if (g_bufmin_state != 1) return;
-  if (g_bufmin_count == 0) return; // wait for first avail hit
+  g_bounds_chain_started = false;
+  g_bounds_chain_min = dt && dt->buffer_addr ? dt->buffer_addr : 0;
+  g_bounds_chain_max = dt && dt->buffer_addr ? dt->buffer_addr - 1 : 0;
+  g_bounds_miss_count = 0;
 
-  // Learning done!
-  if (g_bufmin_dt_idx >= 0) {
-    irq_dt_array[g_bufmin_dt_idx].buffer_min_len = (short)g_bufmin_count;
-    printf("[BUFMIN] done: DT[%d] buffer_min_len=%d\n",
-           g_bufmin_dt_idx, g_bufmin_count);
-    fflush(stdout);
-    FILE *fp = fopen("/tmp/bufmin.log", "a");
-    if (fp) { fprintf(fp, "bufmin_done len=%d\n", g_bufmin_count); fclose(fp); }
+  dt_learning_log("[BOUNDS] UPPER_CHAIN_RESET reason=%s dr=0x%x invalid_upper=%u old_min=0x%x old_max=0x%x old_misses=%d",
+                  reason, dt ? dt->dr : 0, upper, old_min, old_max,
+                  old_misses);
+}
+
+static bool bounds_apply_partial_result(DataTracker *dt) {
+  if (!dt) return false;
+  bool changed = false;
+
+  if (g_bounds_upper_done && g_bounds_upper_len > 1 &&
+      dt->buffer_len != g_bounds_upper_len) {
+    dt->buffer_len = g_bounds_upper_len;
+    changed = true;
   }
 
-  // Cleanup hooks
-  if (g_bufmin_avail_hook) { uc_hook_del(uc, g_bufmin_avail_hook); g_bufmin_avail_hook = 0; }
-  if (g_bufmin_finish_hook) { uc_hook_del(uc, g_bufmin_finish_hook); g_bufmin_finish_hook = 0; }
-  if (g_bufmin_read_hook)   { uc_hook_del(uc, g_bufmin_read_hook);   g_bufmin_read_hook = 0; }
+  if (g_bounds_min_done && g_bounds_min_len > 0) {
+    short min_len = g_bounds_min_len;
+    if (dt->buffer_len > 1 && min_len > dt->buffer_len) {
+      min_len = dt->buffer_len;
+    }
+    if (dt->buffer_min_len != min_len) {
+      dt->buffer_min_len = min_len;
+      changed = true;
+    }
+  }
 
-  g_bufmin_state = 2;
-  write_full_json();
+  return changed;
+}
+
+static bool bounds_is_complete(DataTracker *dt) {
+  return dt && dt->buffer_len > 1 && dt->buffer_min_len > 0;
+}
+
+static void bounds_prepare_retry_on_exit(uc_engine *uc, const char *reason) {
+  if (g_bounds_state != 1 || g_bounds_preparing_exit) return;
+  g_bounds_preparing_exit = true;
+
+  DataTracker *dt = bounds_find_dt();
+  if (!dt) {
+    dt_learning_log("[BOUNDS] RETRY_EXIT reason=%s result_lost dr=0x%x pends=%d",
+                    reason, g_bounds_dt_dr, g_bounds_irq_pend_count);
+    bounds_cleanup_hooks(uc);
+    g_bounds_state = 0;
+    g_discovery_occurred = true;
+    return;
+  }
+
+  bool changed = bounds_apply_partial_result(dt);
+  if (changed) {
+    write_full_json();
+  }
+
+  dt_learning_log("[BOUNDS] RETRY_EXIT reason=%s dr=0x%x pends=%d upper_done=%d upper=%d min_done=%d min=%d json_upper=%d json_min=%d changed=%d",
+                  reason, dt->dr, g_bounds_irq_pend_count,
+                  g_bounds_upper_done ? 1 : 0, g_bounds_upper_len,
+                  g_bounds_min_done ? 1 : 0, g_bounds_min_len,
+                  dt->buffer_len, dt->buffer_min_len, changed ? 1 : 0);
+  bounds_cleanup_hooks(uc);
+  g_bounds_state = 0;
   g_discovery_occurred = true;
+}
+
+static void bounds_finish_round(uc_engine *uc, const char *reason) {
+  bounds_prepare_retry_on_exit(uc, reason);
   do_exit(uc, UC_ERR_OK);
 }
 
-// Buffer read pointer tracking (semu-fuzz: hook_func_buffer_pointer)
-// Advances the hook by 1 byte each time the main loop reads from buffer.
-static void hook_bufmin_read_ptr(uc_engine *uc, uc_mem_type type,
-    uint64_t address, int size, int64_t value, void *user_data) {
+static void bounds_mark_upper_if_valid(uc_engine *uc, const char *reason) {
+  if (!g_bounds_need_upper || g_bounds_upper_done) return;
 
-  if (g_bufmin_state != 1) return;
-
-  // Delete old hook, advance offset, re-hook at new position
-  if (g_bufmin_read_hook) {
-    uc_hook_del(uc, g_bufmin_read_hook);
-    g_bufmin_read_hook = 0;
+  DataTracker *dt = bounds_find_dt();
+  if (!dt) {
+    bounds_finish_round(uc, "upper_dt_lost");
+    return;
   }
-  g_bufmin_read_off++;
-  uc_hook_add(uc, &g_bufmin_read_hook, UC_HOOK_MEM_READ,
-              hook_bufmin_read_ptr, NULL,
-              g_bufmin_read_off, g_bufmin_read_off);
+
+  uint32_t upper = bounds_current_len();
+  if (upper > 0x7fff) upper = 0x7fff;
+  if (upper <= 1) {
+    dt_learning_log("[BOUNDS] UPPER_INVALID reason=%s dr=0x%x upper=%u",
+                    reason, dt->dr, upper);
+    bounds_reset_upper_chain(dt, reason, upper);
+    return;
+  }
+
+  g_bounds_upper_len = (short)upper;
+  g_bounds_upper_done = true;
+  dt->buffer_len = g_bounds_upper_len;
+  write_full_json();
+  dt_learning_log("[BOUNDS] UPPER_DONE reason=%s dr=0x%x upper=%d min_done=%d min=%d",
+                  reason, dt->dr, g_bounds_upper_len,
+                  g_bounds_min_done ? 1 : 0, g_bounds_min_len);
+
+  if (bounds_is_complete(dt)) {
+    bounds_finish_round(uc, "bounds_complete");
+  } else {
+    bounds_finish_round(uc, "upper_done_wait_min_next_round");
+  }
 }
 
-// Hard timeout: fallback if fill doesn't end via ipsr==0 (e.g. ISR never exits)
-static void hook_chain_block(uc_engine *uc, uint64_t address,
-    uint32_t size, void *user_data) {
+static void hook_bounds_avail(uc_engine *uc, uint64_t address, uint32_t size,
+    void *user_data) {
+  (void)address; (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
 
-  if (!g_buffer_fill_active || g_buffer_fill_done) return;
+  DataTracker *dt = bounds_find_dt();
+  if (!dt) return;
 
-  g_chain_idle_bb += size;
-  if (g_chain_idle_bb < 500000) return;  // 500k BB hard timeout
+  if (g_bounds_avail_pass_next) {
+    g_bounds_avail_pass_next = false;
+    dt_learning_log("[BOUNDS] AVAIL_PASS avail=0x%x dr=0x%x pends=%d upper_done=%d min_done=%d",
+                    dt->avail_pc, dt->dr, g_bounds_irq_pend_count,
+                    g_bounds_upper_done ? 1 : 0,
+                    g_bounds_min_done ? 1 : 0);
+    return;
+  }
 
-  printf("[DISCOVERY] FILL: hard timeout after %d BBs. "
-         "min=0x%x max=0x%x ext=%d len=%d\n",
-         g_chain_idle_bb, g_chain_min, g_chain_max,
-         g_chain_extend_count,
-         g_chain_max >= g_chain_min ? g_chain_max - g_chain_min + 1 : 0);
-  g_buffer_fill_done = true;
-  if (g_discovery_mem_read_hook)  { uc_hook_del(uc, g_discovery_mem_read_hook);  g_discovery_mem_read_hook  = 0; }
-  if (g_discovery_mem_write_hook) { uc_hook_del(uc, g_discovery_mem_write_hook); g_discovery_mem_write_hook = 0; }
-  if (g_chain_block_hook)         { uc_hook_del(uc, g_chain_block_hook);         g_chain_block_hook         = 0; }
-  try_finalize(uc);
+  if (!g_bounds_avail_hit) {
+    g_bounds_avail_hit = true;
+    dt_learning_log("[BOUNDS] AVAIL_HIT avail=0x%x dr=0x%x",
+                    dt->avail_pc, dt->dr);
+  }
+
+  if (!g_bounds_fifo_seeded || dt->fifo_tail >= dt->fifo_head) {
+    bounds_fill_fifo(dt);
+    dt_learning_log("[BOUNDS] FIFO_SEED avail=0x%x dr=0x%x size=%d",
+                    dt->avail_pc, dt->dr, BOUNDS_FIFO_SIZE);
+  }
+
+  if (g_bounds_irq <= 0) {
+    const char *irq_source = NULL;
+    g_bounds_irq = resolve_irq_num_for_pc(uc, dt->irq_pc, &irq_source);
+    if (g_bounds_irq > 0) {
+      dt->irq_num = (short)g_bounds_irq;
+      dt_learning_log("[BOUNDS] IRQ_FILTER_ADD_AVAIL source=%s dr=0x%x irq_pc=0x%x irq=%d",
+                      irq_source, dt->dr, dt->irq_pc, g_bounds_irq);
+    } else {
+      dt_learning_log("[BOUNDS] IRQ_UNRESOLVED dr=0x%x irq_pc=0x%x",
+                      dt->dr, dt->irq_pc);
+      return;
+    }
+  }
+
+  if (g_bounds_irq_pend_count >= BOUNDS_MAX_IRQ_PENDS) {
+    dt_learning_log("[BOUNDS] IRQ_BUDGET_DONE dr=0x%x pends=%d max=%d upper_started=%d upper_done=%d min_done=%d",
+                    dt->dr, g_bounds_irq_pend_count, BOUNDS_MAX_IRQ_PENDS,
+                    g_bounds_chain_started ? 1 : 0,
+                    g_bounds_upper_done ? 1 : 0,
+                    g_bounds_min_done ? 1 : 0);
+    bounds_finish_round(uc, "irq_budget");
+    return;
+  }
+
+  nvic_set_pending(uc, g_bounds_irq, false);
+  g_bounds_avail_pass_next = true;
+  g_bounds_irq_pend_count++;
+  dt_learning_log("[BOUNDS] PEND_IRQ avail=0x%x dr=0x%x irq=%d count=%d max=%d",
+                  dt->avail_pc, dt->dr, g_bounds_irq,
+                  g_bounds_irq_pend_count, BOUNDS_MAX_IRQ_PENDS);
 }
 
-// If both read_pc and fill are done, finalize.
+static void hook_bounds_buffer_write(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+  (void)type; (void)user_data;
+  if (g_bounds_state != 1) return;
+  if (!bounds_value_has_taint(size, value)) return;
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  if (ipsr == 0) return;
+
+  DataTracker *dt = bounds_find_dt();
+  if (!dt || !dt->buffer_addr) return;
+
+  uint32_t addr = (uint32_t)address;
+  if (g_bounds_taint_write_log_count < 128) {
+    uint32_t pc = 0;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    int32_t rel = dt->buffer_addr ? (int32_t)(addr - dt->buffer_addr) : 0;
+    dt_learning_log("[BOUNDS] TAINT_WRITE pc=0x%x ipsr=0x%x addr=0x%x size=%d val=0x%llx buf=0x%x rel=%d in_scan=%d",
+                    pc, ipsr, addr, size, (unsigned long long)value,
+                    dt->buffer_addr, rel,
+                    (dt->buffer_addr &&
+                     addr >= dt->buffer_addr &&
+                     addr < dt->buffer_addr + BOUNDS_MAX_SCAN) ? 1 : 0);
+    g_bounds_taint_write_log_count++;
+  }
+  if (addr < dt->buffer_addr || addr >= dt->buffer_addr + BOUNDS_MAX_SCAN) {
+    return;
+  }
+
+  uint32_t write_end = addr + (uint32_t)((size > 0) ? size : 1) - 1;
+  if (!g_bounds_chain_started) {
+    if (addr == dt->buffer_addr) {
+      g_bounds_chain_started = true;
+      g_bounds_chain_min = addr;
+      g_bounds_chain_max = write_end;
+      g_bounds_miss_count = 0;
+      dt_learning_log("[BOUNDS] CHAIN_START addr=0x%x size=%d len=%u",
+                      addr, size, bounds_current_len());
+    }
+    return;
+  }
+
+  if (addr == g_bounds_chain_max + 1) {
+    g_bounds_chain_max = write_end;
+    g_bounds_miss_count = 0;
+    dt_learning_log("[BOUNDS] CHAIN_EXTEND addr=0x%x size=%d len=%u",
+                    addr, size, bounds_current_len());
+    return;
+  }
+
+  if (addr == g_bounds_chain_min && g_bounds_chain_max > g_bounds_chain_min) {
+    dt_learning_log("[BOUNDS] WRAP addr=0x%x upper=%u",
+                    addr, bounds_current_len());
+    bounds_mark_upper_if_valid(uc, "wrap");
+    return;
+  }
+
+  g_bounds_miss_count++;
+  if (g_bounds_miss_count >= BOUNDS_MISS_LIMIT) {
+    dt_learning_log("[BOUNDS] MISS_DONE misses=%d upper=%u last_addr=0x%x",
+                    g_bounds_miss_count, bounds_current_len(), addr);
+    bounds_mark_upper_if_valid(uc, "miss");
+  }
+}
+
+static void hook_bounds_consume(uc_engine *uc, uint64_t address, uint32_t size,
+    void *user_data) {
+  (void)size; (void)user_data;
+  if (g_bounds_state != 1) return;
+
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  uint32_t len = bounds_current_len();
+  dt_learning_log("[BOUNDS] CONSUME_HIT pc=0x%x ipsr=0x%x len=%u need_min=%d min_done=%d upper_done=%d upper=%d",
+                  (uint32_t)address, ipsr, len,
+                  g_bounds_need_min ? 1 : 0,
+                  g_bounds_min_done ? 1 : 0,
+                  g_bounds_upper_done ? 1 : 0,
+                  g_bounds_upper_len);
+
+  if (!g_bounds_need_min) return;
+  if (g_bounds_min_done) return;
+  if (ipsr != 0) return;
+
+  if (len == 0) return;
+  if (len > 0x7fff) len = 0x7fff;
+
+  g_bounds_min_len = (short)len;
+  if (g_bounds_min_len < 1) g_bounds_min_len = 1;
+  g_bounds_min_done = true;
+  DataTracker *dt = bounds_find_dt();
+  if (dt) {
+    if (dt->buffer_len > 1 && g_bounds_min_len > dt->buffer_len) {
+      g_bounds_min_len = dt->buffer_len;
+    }
+    dt->buffer_min_len = g_bounds_min_len;
+    write_full_json();
+  }
+  dt_learning_log("[BOUNDS] MIN_DONE pc=0x%x min=%d upper_done=%d upper=%d",
+                  (uint32_t)address, g_bounds_min_len,
+                  g_bounds_upper_done ? 1 : 0, g_bounds_upper_len);
+  if (bounds_is_complete(dt)) {
+    bounds_finish_round(uc, "bounds_complete");
+  }
+}
+
+static bool start_bounds_learning_if_needed(uc_engine *uc) {
+  int target_idx = -1;
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    DataTracker *dt = &irq_dt_array[i];
+    if (!dt->avail_pc) continue;
+    if (!dt->buffer_addr) continue;
+    if (!dt->consume_pcs[0]) continue;
+    if (dt->buffer_len > 1 && dt->buffer_min_len > 0) continue;
+    target_idx = i;
+    break;
+  }
+
+  if (target_idx < 0) return false;
+
+  DataTracker *dt = &irq_dt_array[target_idx];
+  g_bounds_num_consume_pcs = parse_consume_pcs(dt->consume_pcs,
+                                               g_bounds_consume_pcs, 16);
+  if (g_bounds_num_consume_pcs == 0) {
+    dt_learning_log("[BOUNDS] NO_CONSUME_PCS dt=%d dr=0x%x",
+                    target_idx, dt->dr);
+    return false;
+  }
+
+  g_bounds_state = 1;
+  g_bounds_dt_idx = target_idx;
+  g_bounds_dt_dr = dt->dr;
+  g_bounds_irq = 0;
+  g_bounds_avail_hit = false;
+  g_bounds_avail_pass_next = false;
+  g_bounds_fifo_seeded = false;
+  g_bounds_chain_started = false;
+  g_bounds_chain_min = dt->buffer_addr;
+  g_bounds_chain_max = dt->buffer_addr ? dt->buffer_addr - 1 : 0;
+  g_bounds_miss_count = 0;
+  g_bounds_irq_pend_count = 0;
+  g_bounds_dr_read_log_count = 0;
+  g_bounds_taint_write_log_count = 0;
+  g_bounds_need_upper = dt->buffer_len <= 1;
+  g_bounds_need_min = dt->buffer_min_len <= 0;
+  g_bounds_upper_done = !g_bounds_need_upper;
+  g_bounds_upper_len = dt->buffer_len;
+  g_bounds_min_done = !g_bounds_need_min;
+  g_bounds_min_len = dt->buffer_min_len;
+  g_bounds_preparing_exit = false;
+  g_bounds_consumer_log_count = 0;
+  g_bounds_read_entry_guess_pc = dt->read_pc > 0x12 ? dt->read_pc - 0x12 : 0;
+  memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
+  g_bounds_num_diag_hooks = 0;
+
+  // Resolve/filter the target IRQ only after avail_pc is reached. Before that,
+  // this stage only installs the hooks needed for bounds learning.
+
+  // The bounds UC_HOOK_CODE callbacks are dispatched by the early global
+  // hook_bounds_dispatch hook. Registering them here would miss already
+  // translated TBs and would duplicate avail/consume handling.
+  uc_hook_add(uc, &g_bounds_write_hook, UC_HOOK_MEM_WRITE,
+              hook_bounds_buffer_write, NULL, 0, 0xFFFFFFFF);
+
+#if BOUNDS_PC_TRACE_ENABLE
+  g_bounds_pc_trace_round++;
+  g_bounds_pc_trace_count = 0;
+
+  char pc_trace_path[128];
+  snprintf(pc_trace_path, sizeof(pc_trace_path),
+           "/tmp/bounds_pc_trace_%d.log", getpid());
+  g_bounds_pc_trace_fp = fopen(pc_trace_path, "a");
+  if (g_bounds_pc_trace_fp) {
+    fprintf(g_bounds_pc_trace_fp,
+            "\n[ROUND_START] round=%u dr=0x%x avail=0x%x buf=0x%x read=0x%x callread=0x%x consume_pcs=%d\n",
+            g_bounds_pc_trace_round,
+            dt->dr,
+            dt->avail_pc,
+            dt->buffer_addr,
+            dt->read_pc,
+            dt->callread_pc,
+            g_bounds_num_consume_pcs);
+    fflush(g_bounds_pc_trace_fp);
+  }
+#endif
+
+#if DT_DIAG_HOOK_ENABLE
+  bounds_add_diag_hook(uc, dt->avail_pc + 4,
+                       hook_bounds_avail_return, "avail_ret");
+  bounds_add_diag_hook(uc, dt->avail_pc + 8,
+                       hook_bounds_process_call, "process_call");
+  if (dt->callread_pc) {
+    bounds_add_diag_hook(uc, dt->callread_pc,
+                         hook_bounds_callread_before, "callread_before");
+    bounds_add_diag_hook(uc, dt->callread_pc + 2,
+                         hook_bounds_callread_return, "callread_ret");
+  }
+  if (dt->read_pc) {
+    bounds_add_diag_hook(uc, g_bounds_read_entry_guess_pc,
+                         hook_bounds_read_entry_guess, "read_entry_guess");
+    bounds_add_diag_hook(uc, dt->read_pc,
+                         hook_bounds_read_pc_diag, "read_pc");
+  }
+#endif
+
+  dt_learning_log("[BOUNDS] START dt=%d dr=0x%x avail=0x%x buf=0x%x read=0x%x callread=0x%x read_entry_guess=0x%x consume_pcs=%d diag_hooks=%d need_upper=%d need_min=%d",
+                  target_idx, dt->dr, dt->avail_pc, dt->buffer_addr,
+                  dt->read_pc, dt->callread_pc, g_bounds_read_entry_guess_pc,
+                  g_bounds_num_consume_pcs, g_bounds_num_diag_hooks,
+                  g_bounds_need_upper ? 1 : 0,
+                  g_bounds_need_min ? 1 : 0);
+  return true;
+}
+
+// Finalize once buffer_addr and read_pc/callread_pc are known.
 static void try_finalize(uc_engine *uc) {
-  if (g_read_pc_done && g_buffer_fill_done)
+  if (g_read_pc_done && g_discovery_buffer_addr != 0)
     finalize_discovery(uc);
 }
 
@@ -2916,10 +3678,6 @@ static void try_finalize(uc_engine *uc) {
 
 static void finalize_discovery(uc_engine *uc) {
   // 1. Remove discovery hooks
-  if (g_discovery_mem_read_hook) {
-    uc_hook_del(uc, g_discovery_mem_read_hook);
-    g_discovery_mem_read_hook = 0;
-  }
   if (g_discovery_mem_write_hook) {
     uc_hook_del(uc, g_discovery_mem_write_hook);
     g_discovery_mem_write_hook = 0;
@@ -2928,12 +3686,7 @@ static void finalize_discovery(uc_engine *uc) {
     uc_hook_del(uc, g_discovery_buffer_read_hook);
     g_discovery_buffer_read_hook = 0;
   }
-  if (g_chain_block_hook) {
-    uc_hook_del(uc, g_chain_block_hook);
-    g_chain_block_hook = 0;
-  }
   g_in_discovery_mode = false;
-  g_buffer_fill_active = false;
 
   // 2. Create full irq_dt from discovery data
   uint32_t dr = g_discovery_dr;
@@ -2945,23 +3698,8 @@ static void finalize_discovery(uc_engine *uc) {
   dt->read_pc = g_discovery_read_pc;
   dt->callread_pc = g_discovery_callread_pc;
   dt->avail_pc = 0;          // filled by Ghidra daemon later
-  dt->buffer_min_len = 1;    // default 1 byte (bufmin disabled)
-
-  // Compute buffer_len from chain tracking
-  if (g_chain_extend_count > 0 && g_chain_max >= g_chain_min) {
-    dt->buffer_len = (short)(g_chain_max - g_chain_min + 1);
-  } else {
-    dt->buffer_len = 0;
-  }
-
-  // Failed upper-bound inference: exit without saving, user should re-run
-  if (dt->buffer_len <= 1) {
-    printf("[DISCOVERY] buffer_len=%d — inference failed, retrying.\n",
-           dt->buffer_len);
-    fflush(stdout);
-    do_exit(uc, UC_ERR_OK);
-    return;
-  }
+  dt->buffer_len = 0;        // learned after avail_pc static analysis
+  dt->buffer_min_len = 0;    // learned after avail_pc static analysis
 
   dt->rx_head = 0;
   dt->rx_tail = 0;
@@ -2972,13 +3710,14 @@ static void finalize_discovery(uc_engine *uc) {
     if (fd >= 0) {
       write(fd, g_json_file_path, strlen(g_json_file_path));
       close(fd);
+      dt_learning_log("[GHIDRA_PENDING] path=%s reason=irq_dt dr=0x%x",
+                      g_json_file_path, dr);
     }
   }
 
-  printf("[DISCOVERY] Final DT: dr=0x%x irq_pc=0x%x buf=0x%x "
-         "read_pc=0x%x callread_pc=0x%x buffer_len=%d\n",
-         dt->dr, dt->irq_pc, dt->buffer_addr,
-         dt->read_pc, dt->callread_pc, dt->buffer_len);
+  dt_learning_log("[DISCOVERY] IRQ_DT_PENDING dr=0x%x irq_pc=0x%x buf=0x%x read_pc=0x%x callread_pc=0x%x",
+                  dt->dr, dt->irq_pc, dt->buffer_addr,
+                  dt->read_pc, dt->callread_pc);
 
   // Update hash table (replace placeholder)
   int ret = 0;
@@ -3001,10 +3740,9 @@ static void finalize_discovery(uc_engine *uc) {
 
   g_discovery_occurred = true;
 
-  printf("[DISCOVERY] Complete: DR=0x%x irq_pc=0x%x buf=0x%x "
-         "read_pc=0x%x callread_pc=0x%x buffer_len=%d\n",
-         dr, g_discovery_irq_pc, g_discovery_buffer_addr,
-         g_discovery_read_pc, g_discovery_callread_pc, dt->buffer_len);
+  dt_learning_log("[DISCOVERY] COMPLETE_PENDING dr=0x%x irq_pc=0x%x buf=0x%x read_pc=0x%x callread_pc=0x%x",
+                  dr, g_discovery_irq_pc, g_discovery_buffer_addr,
+                  g_discovery_read_pc, g_discovery_callread_pc);
 
   do_exit(uc, UC_ERR_OK);
 }
@@ -3025,43 +3763,3 @@ int stop_for_firmware_read_datareg() {
   stop_count = 0;
   return stop_count;
 }
-
-int avail_cnt(uint64_t address) {
-    // 获取进程号
-    // pid_t pid = getpid();
-    char filename[200];
-    // 生成文件名
-    snprintf(filename, sizeof(filename), "/home/n0vic3/fuzzers/fuzzware-examples/P2IM/avail_cnt/avail_cnt_0x%lx.txt",address);
-    // 打开文件
-    // printf("filename :%s\n", filename);
-    FILE *fp = fopen(filename, "r+");
-    if (fp == NULL) {
-        // 文件不存在，创建并初始化
-        fp = fopen(filename, "w+");
-        if (fp == NULL) {
-            perror("Error opening file");
-            return 1;
-        }
-        // 初始化文件内容为 0
-        fprintf(fp, "%d", 0);
-        rewind(fp);
-    }
-
-    int num;
-    // 读取文件中的数字
-    if (fscanf(fp, "%d", &num)!= 1) {
-        perror("Error reading from file");
-        fclose(fp);
-        return 1;
-    }
-    num++;  // 数字加 1
-    rewind(fp);  // 重置文件指针到开头
-    // 写回更新后的数字
-    if (fprintf(fp, "%d", num) < 0) {
-        perror("Error writing to file");
-        fclose(fp);
-        return 1;
-    }
-    fclose(fp);  // 关闭文件
-    return 0;
-  }

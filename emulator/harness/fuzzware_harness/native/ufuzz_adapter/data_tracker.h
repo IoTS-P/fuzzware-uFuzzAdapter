@@ -57,19 +57,8 @@ extern uint32_t g_discovery_read_pc;
 extern uint32_t g_discovery_callread_pc;
 extern uc_hook g_discovery_buffer_read_hook;
 extern bool g_read_pc_done;
-extern bool g_buffer_fill_active;
-extern bool g_buffer_fill_done;
-extern bool g_read_pc_done;
-extern uint32_t g_fill_irq_num;
-// Chain tracking
-extern uint32_t g_chain_min;
-extern uint32_t g_chain_max;
-extern int g_chain_extend_count;
-extern int g_consecutive_miss;
-extern int g_chain_idle_bb;
 
 // Hook handle tracking for per-round cleanup
-extern uc_hook g_avail_hook_handles[MAX_AVAIL_HOOKS];
 extern int g_num_avail_hooks;
 extern uc_hook g_pending_hook_handles[MAX_PENDING_HOOKS];
 extern int g_num_pending_hooks;
