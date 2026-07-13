@@ -27,7 +27,6 @@ typedef struct DataTracker {
 // Pending (unrecognized) DR tracking
 #define MAX_PENDING_DRS 128
 #define MAX_DR_ADDRS 256
-#define MAX_SR_ADDRS 256
 #define MAX_DISCOVERY_ADDRS 1024
 #define MAX_AVAIL_HOOKS 200
 #define MAX_PENDING_HOOKS 128
@@ -37,8 +36,6 @@ extern short pending_dt_array_index;
 
 extern uint32_t g_all_dr_addrs[MAX_DR_ADDRS];
 extern int g_num_dr_addrs;
-extern uint32_t g_all_sr_addrs[MAX_SR_ADDRS];
-extern int g_num_sr_addrs;
 
 extern bool g_in_discovery_mode;
 extern uint32_t g_discovery_dr;

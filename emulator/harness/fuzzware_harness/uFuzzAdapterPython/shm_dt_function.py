@@ -2,48 +2,68 @@ import os,pickle,ctypes,json
 from ..util import my_debug_log
 from unicorn import UC_HOOK_CODE,UC_HOOK_BLOCK
 
+def _strip_dr_line(line):
+    return line.split('#', 1)[0].strip().rstrip(',')
+
+def _parse_dr_addr(line):
+    line = _strip_dr_line(line)
+    if not line:
+        return None
+    try:
+        return int(line, 16)
+    except ValueError:
+        return None
+
 def find_rule_file(binary_dir):
-    """Find semu-fuzz rule file (*.txt with R_/T_/S_ lines) in directory."""
-    for f in os.listdir(binary_dir):
-        if not f.endswith('.txt'):
+    """Find a *_dr_list.txt file containing DR addresses."""
+    for f in sorted(os.listdir(binary_dir)):
+        if not f.endswith("_dr_list.txt"):
             continue
         fpath = os.path.join(binary_dir, f)
         try:
             with open(fpath) as fp:
-                first = fp.readline().strip()
-                if first and first[0] in 'RTSCO' and '_' in first:
-                    return fpath
+                for line in fp:
+                    stripped = _strip_dr_line(line)
+                    if not stripped:
+                        continue
+                    if _parse_dr_addr(stripped) is not None:
+                        return fpath
+                    break
         except Exception:
             continue
     return None
 
 def find_json_file(binary_dir):
     """Find DT JSON file in directory (not shared_memory files)."""
+    preferred = os.path.join(binary_dir, "discovered_channels.json")
+    if os.path.exists(preferred):
+        return preferred
+
+    skipped = {
+        "indirect_call_sites.json",
+    }
     for f in os.listdir(binary_dir):
-        if f.endswith('.json') and 'shared_memory' not in f.lower():
+        lower = f.lower()
+        if lower in skipped:
+            continue
+        if lower.startswith("dynamic_indirect_map"):
+            continue
+        if f.endswith('.json') and 'shared_memory' not in lower:
             return os.path.join(binary_dir, f)
     return None
 
 def parse_rule_file(rule_path):
-    """Extract DR (R_/T_) and SR (S_) addresses from semu-fuzz rule file."""
-    drs, srs = [], []
+    """Parse one-DR-address-per-line files."""
+    drs = []
+    seen = set()
     with open(rule_path) as f:
         for line in f:
-            line = line.strip()
-            if not line or '_' not in line:
+            addr = _parse_dr_addr(line)
+            if addr is None or addr in seen:
                 continue
-            typ = line[0]
-            if typ not in 'RTS':
-                continue
-            try:
-                addr = int(line.split('_')[1], 16)
-            except (ValueError, IndexError):
-                continue
-            if typ in ('R', 'T'):
-                drs.append(addr)
-            elif typ == 'S':
-                srs.append(addr)
-    return list(set(drs)), list(set(srs))  # dedup
+            seen.add(addr)
+            drs.append(addr)
+    return drs
 
 def read_from_shm_json(config,c_lib,vtor):
     '''

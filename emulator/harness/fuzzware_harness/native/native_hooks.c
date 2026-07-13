@@ -47,6 +47,9 @@ target (uc_mem_write)
 #define MAX_IGNORED_ADDRESSES 4096
 #define FREAD_NMAX_CHUNKS 5
 #define DT_LEARNING_LOG_PATH "/tmp/dt_learning.log"
+// Hardcode a Cortex-M exception/vector index here to trace its runtime IRQ PC.
+// External IRQn values should be converted with: vector_index = IRQn + 16.
+#define DEBUG_TARGET_IRQ_NUM 0
 
 // AFL-related constants
 // 65k bitmap size
@@ -159,13 +162,14 @@ short pending_dt_array_index = 0;
 
 uint32_t g_all_dr_addrs[MAX_DR_ADDRS] = {0};
 int g_num_dr_addrs = 0;
-uint32_t g_all_sr_addrs[MAX_SR_ADDRS] = {0};
-int g_num_sr_addrs = 0;
 
 bool g_in_discovery_mode = false;
 uint32_t g_discovery_dr = 0;
 uint32_t g_discovery_taint = 0;
 uint32_t g_discovery_irq_pc = 0;
+uint32_t g_discovery_irq_ipsr = 0;
+int g_discovery_cross_irq_skip_count = 0;
+int g_discovery_irq_read_skip_count = 0;
 uint32_t g_discovery_addr_list[MAX_DISCOVERY_ADDRS] = {0};
 int g_discovery_addr_count = 0;
 uint32_t g_discovery_buffer_addr = 0;
@@ -174,7 +178,7 @@ bool g_discovery_occurred = false;
 char g_json_file_path[512] = {0};
 
 // Phase 0: buffer-addr discovery (taint tracking, no refill)
-// After buffer_addr is found, capture read_pc/callread_pc in the main loop.
+// After buffer_addr is found, capture read_pc/callread_pc on the first read.
 uint32_t g_discovery_read_pc = 0;
 uint32_t g_discovery_callread_pc = 0;
 uc_hook g_discovery_buffer_read_hook = 0;
@@ -196,6 +200,14 @@ bool g_read_pc_done = false;
 #define BOUNDS_PC_TRACE_ENABLE 0
 #endif
 #define BOUNDS_PC_TRACE_LIMIT 200000
+#define MAX_INDIRECT_CALL_SITES 4096
+#define MAX_PSEUDO_CHANNELS 1024
+#define MAX_MAIN_DT_FAILURES 1024
+#define MAX_ACTIVE_PSEUDO_DRS 64
+#define MAX_FUNCTION_ENTRIES 8192
+#define PSEUDO_MAX_RETRY 5
+#define MAIN_DT_MAX_RETRY 5
+#define PSEUDO_DIRTY_BYTE 0xBB
 static int g_bounds_state = 0;       // 0=IDLE, 1=INFERRING
 static int g_bounds_dt_idx = -1;
 static uint32_t g_bounds_dt_dr = 0;
@@ -225,6 +237,48 @@ static uint64_t g_code_hook_end = 0;
 static uc_hook g_bounds_write_hook = 0;
 static uint32_t g_bounds_consume_pcs[16] = {0};
 static int g_bounds_num_consume_pcs = 0;
+typedef struct {
+  uint32_t src_pc;
+} IndirectCallSite;
+typedef struct {
+  uint32_t callread_pc;
+  uint32_t dr;
+  uint32_t read_pc;
+  uint32_t irq_pc;
+  uint32_t buffer_addr;
+  uint32_t escape_block;
+  uint32_t retry_count;
+} PseudoChannel;
+
+typedef struct {
+  uint32_t dr;
+  uint32_t read_pc;
+  uint32_t callread_pc;
+  uint32_t retry_count;
+} MainDtFailure;
+static IndirectCallSite g_indirect_sites[MAX_INDIRECT_CALL_SITES] = {0};
+static int g_num_indirect_sites = 0;
+static bool g_indirect_enabled = true;
+static char g_indirect_map_path[512] = {0};
+static char g_json_blacklist_raw[8192] = "[]";
+static char g_json_pseudo_channels_raw[8192] = "[]";
+static char g_json_main_dt_failures_raw[8192] = "[]";
+static PseudoChannel g_pseudo_channels[MAX_PSEUDO_CHANNELS] = {0};
+static int g_num_pseudo_channels = 0;
+static MainDtFailure g_main_dt_failures[MAX_MAIN_DT_FAILURES] = {0};
+static int g_num_main_dt_failures = 0;
+static uint32_t g_function_entries[MAX_FUNCTION_ENTRIES] = {0};
+static int g_num_function_entries = 0;
+static bool g_pseudo_active = false;
+static uint32_t g_pseudo_callread_pc = 0;
+static uint32_t g_pseudo_dr = 0;
+static uint32_t g_pseudo_active_drs[MAX_ACTIVE_PSEUDO_DRS] = {0};
+static int g_pseudo_active_dr_count = 0;
+static uint32_t g_pseudo_escape_block = 0;
+static uint32_t g_pseudo_prev_block = 0;
+static int g_pseudo_dr_read_diag_count = 0;
+static int g_pseudo_escape_skip_irq_log_count = 0;
+static uc_hook g_pseudo_block_hook = 0;
 typedef struct {
   uint32_t pc;
   uc_cb_hookcode_t cb;
@@ -256,6 +310,10 @@ static void hook_bounds_read_pc_diag(uc_engine *uc, uint64_t address, uint32_t s
 #endif
 static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
     uint32_t size, void *user_data);
+static void hook_pseudo_escape_block(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data);
+static void dispatch_indirect_call(uc_engine *uc, uint32_t pc);
+static void dispatch_pseudo_callread(uc_engine *uc, uint32_t pc);
 static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
     uint64_t address, uint32_t size);
 static void bounds_prepare_retry_on_exit(uc_engine *uc, const char *reason);
@@ -267,7 +325,12 @@ uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data);
 
+#ifndef DT_LEARNING_LOG_ENABLE
+#define DT_LEARNING_LOG_ENABLE 0
+#endif
+
 static void dt_learning_log(const char *fmt, ...) {
+#if DT_LEARNING_LOG_ENABLE
   FILE *fp = fopen(DT_LEARNING_LOG_PATH, "a");
   if (!fp) return;
 
@@ -277,10 +340,13 @@ static void dt_learning_log(const char *fmt, ...) {
   va_end(args);
   fputc('\n', fp);
   fclose(fp);
+#else
+  (void)fmt;
+#endif
 }
 
 #ifndef DT_DELIVERY_LOG_ENABLE
-#define DT_DELIVERY_LOG_ENABLE 1
+#define DT_DELIVERY_LOG_ENABLE 0
 #endif
 
 static void delivery_log(const char *fmt, ...) {
@@ -298,6 +364,348 @@ static void delivery_log(const char *fmt, ...) {
 #else
   (void)fmt;
 #endif
+}
+
+static int compare_indirect_site(const void *a, const void *b) {
+  const IndirectCallSite *ia = (const IndirectCallSite *)a;
+  const IndirectCallSite *ib = (const IndirectCallSite *)b;
+  if (ia->src_pc < ib->src_pc) return -1;
+  if (ia->src_pc > ib->src_pc) return 1;
+  return 0;
+}
+
+static int compare_u32_value(const void *a, const void *b) {
+  uint32_t va = *(const uint32_t *)a;
+  uint32_t vb = *(const uint32_t *)b;
+  if (va < vb) return -1;
+  if (va > vb) return 1;
+  return 0;
+}
+
+static int find_indirect_site_index(uint32_t pc) {
+  pc &= ~1u;
+  int lo = 0;
+  int hi = g_num_indirect_sites - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    uint32_t mid_pc = g_indirect_sites[mid].src_pc;
+    if (pc == mid_pc) {
+      return mid;
+    }
+    if (pc < mid_pc) {
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return -1;
+}
+
+static bool is_function_entry(uint32_t pc) {
+  pc &= ~1u;
+  int lo = 0;
+  int hi = g_num_function_entries - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    uint32_t mid_pc = g_function_entries[mid];
+    if (pc == mid_pc) return true;
+    if (pc < mid_pc) {
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return false;
+}
+
+static int find_pseudo_channel_index(uint32_t pc) {
+  pc &= ~1u;
+  for (int i = 0; i < g_num_pseudo_channels; i++) {
+    if (g_pseudo_channels[i].callread_pc == pc) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+static PseudoChannel *find_pseudo_buffer_hint(uint32_t dr, uint32_t irq_pc) {
+  irq_pc &= ~1u;
+  for (int i = 0; i < g_num_pseudo_channels; i++) {
+    PseudoChannel *ch = &g_pseudo_channels[i];
+    if (ch->dr == dr && ch->irq_pc == irq_pc && ch->buffer_addr != 0) {
+      return ch;
+    }
+  }
+  return NULL;
+}
+
+static bool is_known_pseudo_callread(uint32_t dr, uint32_t raw_lr,
+                                     uint32_t *matched_callread,
+                                     uint32_t *retry_count) {
+  uint32_t ret_addr = raw_lr & ~1u;
+
+  for (int i = 0; i < g_num_pseudo_channels; i++) {
+    PseudoChannel *ch = &g_pseudo_channels[i];
+    if (ch->dr != dr) {
+      continue;
+    }
+
+    uint32_t pc = ch->callread_pc & ~1u;
+    if (ret_addr == pc || ret_addr == pc + 2 || ret_addr == pc + 4) {
+      if (matched_callread) {
+        *matched_callread = pc;
+      }
+      if (retry_count) {
+        *retry_count = ch->retry_count;
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool is_known_main_dt_failure(uint32_t dr, uint32_t read_pc,
+                                     uint32_t raw_lr,
+                                     uint32_t *matched_callread,
+                                     uint32_t *retry_count) {
+  uint32_t read_addr = read_pc & ~1u;
+  uint32_t ret_addr = raw_lr & ~1u;
+
+  for (int i = 0; i < g_num_main_dt_failures; i++) {
+    MainDtFailure *failure = &g_main_dt_failures[i];
+    if (failure->dr != dr || ((failure->read_pc & ~1u) != read_addr)) {
+      continue;
+    }
+
+    uint32_t pc = failure->callread_pc & ~1u;
+    if (ret_addr == pc || ret_addr == pc + 2 || ret_addr == pc + 4) {
+      if (matched_callread) {
+        *matched_callread = pc;
+      }
+      if (retry_count) {
+        *retry_count = failure->retry_count;
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool pseudo_active_has_dr(uint32_t dr) {
+  for (int i = 0; i < g_pseudo_active_dr_count; i++) {
+    if (g_pseudo_active_drs[i] == dr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void pseudo_active_add_dr(uint32_t dr) {
+  if (pseudo_active_has_dr(dr)) {
+    return;
+  }
+  if (g_pseudo_active_dr_count < MAX_ACTIVE_PSEUDO_DRS) {
+    g_pseudo_active_drs[g_pseudo_active_dr_count++] = dr;
+  }
+}
+
+static void pseudo_clear_state(const char *reason, uint32_t pc) {
+  if (g_pseudo_active) {
+    dt_learning_log("[PSEUDO] ESCAPE reason=%s pc=0x%x callread=0x%x dr=0x%x escape=0x%x prev=0x%x",
+                    reason ? reason : "unknown", pc, g_pseudo_callread_pc,
+                    g_pseudo_dr, g_pseudo_escape_block, g_pseudo_prev_block);
+  }
+  g_pseudo_active = false;
+  g_pseudo_callread_pc = 0;
+  g_pseudo_dr = 0;
+  g_pseudo_active_dr_count = 0;
+  g_pseudo_escape_block = 0;
+}
+
+static void dispatch_pseudo_callread(uc_engine *uc, uint32_t pc) {
+  (void)uc;
+  int idx = find_pseudo_channel_index(pc);
+  if (idx < 0) {
+    return;
+  }
+
+  PseudoChannel *ch = &g_pseudo_channels[idx];
+  g_pseudo_active = true;
+  g_pseudo_callread_pc = ch->callread_pc;
+  g_pseudo_dr = ch->dr;
+  g_pseudo_escape_block = ch->escape_block;
+  g_pseudo_active_dr_count = 0;
+  for (int i = 0; i < g_num_pseudo_channels; i++) {
+    PseudoChannel *cur = &g_pseudo_channels[i];
+    if (cur->callread_pc != ch->callread_pc) {
+      continue;
+    }
+    pseudo_active_add_dr(cur->dr);
+    if (g_pseudo_escape_block == 0 && cur->escape_block != 0) {
+      g_pseudo_escape_block = cur->escape_block;
+    }
+  }
+  dt_learning_log("[PSEUDO] HIT callread=0x%x dr=0x%x read=0x%x escape=0x%x prev=0x%x active_drs=%d",
+                  ch->callread_pc, ch->dr, ch->read_pc,
+                  ch->escape_block, g_pseudo_prev_block,
+                  g_pseudo_active_dr_count);
+}
+
+static void hook_pseudo_escape_block(uc_engine *uc, uint64_t address,
+    uint32_t size, void *user_data) {
+  (void)size; (void)user_data;
+  uint32_t pc = (uint32_t)address & ~1u;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  if (g_pseudo_active && g_pseudo_escape_block != 0 &&
+      ipsr == 0 && is_function_entry(pc) && g_pseudo_prev_block != 0 &&
+      g_pseudo_prev_block != g_pseudo_escape_block) {
+    pseudo_clear_state("function_entry", pc);
+  }
+
+  if (g_pseudo_active && g_pseudo_escape_block != 0 &&
+      ipsr != 0 && is_function_entry(pc) &&
+      g_pseudo_escape_skip_irq_log_count < 64) {
+    dt_learning_log("[PSEUDO] ESCAPE_SKIP_IRQ pc=0x%x ipsr=0x%x callread=0x%x dr=0x%x escape=0x%x prev=0x%x",
+                    pc, ipsr, g_pseudo_callread_pc, g_pseudo_dr,
+                    g_pseudo_escape_block, g_pseudo_prev_block);
+    g_pseudo_escape_skip_irq_log_count++;
+  }
+
+  g_pseudo_prev_block = pc;
+}
+
+static bool pseudo_get_dirty_input(const char *model, uint64_t addr,
+                                   uint8_t *buf, uint32_t size) {
+  uint32_t dr = (uint32_t)addr;
+  if (!g_pseudo_active || !pseudo_active_has_dr(dr) || !buf || size == 0) {
+    return false;
+  }
+
+  memset(buf, PSEUDO_DIRTY_BYTE, size);
+  dt_learning_log("[PSEUDO] DIRTY model=%s callread=0x%x dr=0x%x addr=0x%llx dirty_len=%u",
+                  model ? model : "unknown", g_pseudo_callread_pc,
+                  dr, (unsigned long long)addr, size);
+  return true;
+}
+
+static void remove_indirect_site_at(int idx) {
+  if (idx < 0 || idx >= g_num_indirect_sites) {
+    return;
+  }
+  if (idx < g_num_indirect_sites - 1) {
+    memmove(&g_indirect_sites[idx],
+            &g_indirect_sites[idx + 1],
+            (g_num_indirect_sites - idx - 1) * sizeof(g_indirect_sites[0]));
+  }
+  g_num_indirect_sites--;
+}
+
+static bool read_arm_reg_by_index(uc_engine *uc, int reg_idx, uint32_t *value) {
+  int reg = 0;
+  switch (reg_idx) {
+    case 0: reg = UC_ARM_REG_R0; break;
+    case 1: reg = UC_ARM_REG_R1; break;
+    case 2: reg = UC_ARM_REG_R2; break;
+    case 3: reg = UC_ARM_REG_R3; break;
+    case 4: reg = UC_ARM_REG_R4; break;
+    case 5: reg = UC_ARM_REG_R5; break;
+    case 6: reg = UC_ARM_REG_R6; break;
+    case 7: reg = UC_ARM_REG_R7; break;
+    case 8: reg = UC_ARM_REG_R8; break;
+    case 9: reg = UC_ARM_REG_R9; break;
+    case 10: reg = UC_ARM_REG_R10; break;
+    case 11: reg = UC_ARM_REG_R11; break;
+    case 12: reg = UC_ARM_REG_R12; break;
+    case 13: reg = UC_ARM_REG_SP; break;
+    case 14: reg = UC_ARM_REG_LR; break;
+    case 15: reg = UC_ARM_REG_PC; break;
+    default: return false;
+  }
+  return uc_reg_read(uc, reg, value) == UC_ERR_OK;
+}
+
+static bool decode_thumb_bx_blx_target(uc_engine *uc, uint32_t pc,
+                                       uint32_t *target, const char **kind) {
+  uint16_t insn = 0;
+  if (uc_mem_read(uc, pc, &insn, sizeof(insn)) != UC_ERR_OK) {
+    return false;
+  }
+
+  bool is_bx = ((insn & 0xff87u) == 0x4700u);
+  bool is_blx = ((insn & 0xff87u) == 0x4780u);
+  if (!is_bx && !is_blx) {
+    return false;
+  }
+
+  int rm = (insn >> 3) & 0xf;
+  uint32_t raw_target = 0;
+  if (!read_arm_reg_by_index(uc, rm, &raw_target)) {
+    return false;
+  }
+
+  *target = raw_target & ~1u;
+  *kind = is_blx ? "BLX" : "BX";
+  return true;
+}
+
+static bool indirect_target_in_text(uint32_t target) {
+  return target >= g_code_hook_begin && target <= g_code_hook_end;
+}
+
+static void append_indirect_map_record(uint32_t src, uint32_t target,
+                                       const char *kind) {
+  if (g_indirect_map_path[0] == 0) {
+    return;
+  }
+
+  FILE *fp = fopen(g_indirect_map_path, "a");
+  if (!fp) {
+    dt_learning_log("[INDIRECT] WRITE_FAIL path=%s src=0x%x target=0x%x",
+                    g_indirect_map_path, src, target);
+    return;
+  }
+
+  fprintf(fp,
+          "{\"src\":\"0x%x\",\"target\":\"0x%x\",\"kind\":\"%s\",\"pid\":%ld}\n",
+          src, target, kind, (long)getpid());
+  fclose(fp);
+}
+
+static void dispatch_indirect_call(uc_engine *uc, uint32_t pc) {
+  if (!g_indirect_enabled || g_num_indirect_sites <= 0) {
+    return;
+  }
+
+  int idx = find_indirect_site_index(pc);
+  if (idx < 0) {
+    return;
+  }
+
+  uint32_t target = 0;
+  const char *kind = NULL;
+  if (!decode_thumb_bx_blx_target(uc, pc, &target, &kind)) {
+    return;
+  }
+
+  if (target == 0) {
+    dt_learning_log("[INDIRECT] NULL_TARGET src=0x%x kind=%s", pc, kind);
+    return;
+  }
+
+  if (!indirect_target_in_text(target)) {
+    dt_learning_log("[INDIRECT] OUT_OF_TEXT src=0x%x target=0x%x kind=%s",
+                    pc, target, kind);
+    return;
+  }
+
+  append_indirect_map_record(pc, target, kind);
+  dt_learning_log("[INDIRECT] RESOLVE src=0x%x target=0x%x kind=%s remaining=%d",
+                  pc, target, kind, g_num_indirect_sites - 1);
+  remove_indirect_site_at(idx);
 }
 
 #if BOUNDS_PC_TRACE_ENABLE
@@ -330,6 +738,9 @@ static void hook_bounds_pc_trace(uc_engine *uc, uint64_t address,
 static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
     uint32_t size, void *user_data) {
   uint32_t pc = (uint32_t)address & ~1u;
+
+  dispatch_indirect_call(uc, pc);
+  dispatch_pseudo_callread(uc, pc);
 
 #if BOUNDS_PC_TRACE_ENABLE
   if (g_bounds_state == 1) {
@@ -827,6 +1238,10 @@ void hook_mmio_access(uc_engine *uc, uc_mem_type type, uint64_t addr, int size,
 
   uint64_t val = 0;
 
+  if (pseudo_get_dirty_input("default", addr, (uint8_t *)&val, (uint32_t)size)) {
+    goto write_val;
+  }
+
   // 兜底：DT FIFO 优先，get_fuzz 后备
   if (hash_table != NULL) {
     khint_t k = kh_get(dr_dt, hash_table, addr);
@@ -1012,6 +1427,11 @@ void bitextract_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   DataTracker *fifo_dt = NULL;
   bool fifo_used = false;
 
+  if (pseudo_get_dirty_input("bitextract", addr, (uint8_t *)&fuzzer_val,
+                             config->byte_size)) {
+    goto apply_model;
+  }
+
   // 数据源选择：DT FIFO 优先，get_fuzz 后备
   if (hash_table != NULL) {
     khint_t k = kh_get(dr_dt, hash_table, addr);
@@ -1064,6 +1484,10 @@ void value_set_mmio_model_handler(uc_engine *uc, uc_mem_type type,
   // #endif
 
   if (config->num_vals > 1) {
+    if (pseudo_get_dirty_input("value_set", addr, &fuzzer_val, 1)) {
+      goto apply_value_set;
+    }
+
     // 数据源选择：DT FIFO 优先，get_fuzz 后备
     if (hash_table != NULL) {
       khint_t k = kh_get(dr_dt, hash_table, addr);
@@ -1537,6 +1961,18 @@ uc_err init(uc_engine *uc, exit_hook_t p_exit_hook, int p_num_mmio_regions,
       return UC_ERR_EXCEPTION;
     }
     dt_learning_log("[BOUNDS] DISPATCH_HOOK_ADD begin=0x%llx end=0x%llx",
+                    (unsigned long long)g_code_hook_begin,
+                    (unsigned long long)g_code_hook_end);
+  }
+
+  if (!g_pseudo_block_hook) {
+    if (uc_hook_add(uc, &g_pseudo_block_hook, UC_HOOK_BLOCK,
+                    hook_pseudo_escape_block, NULL,
+                    g_code_hook_begin, g_code_hook_end) != UC_ERR_OK) {
+      perror("Could not register pseudo escape block hook\n");
+      return UC_ERR_EXCEPTION;
+    }
+    dt_learning_log("[PSEUDO] BLOCK_HOOK_ADD begin=0x%llx end=0x%llx",
                     (unsigned long long)g_code_hook_begin,
                     (unsigned long long)g_code_hook_end);
   }
@@ -2223,30 +2659,114 @@ void my_debug_log(const char *format) {
   return;
 }
 
-static int get_irq_num_from_vector_table(uc_engine *uc, uint32_t irq_pc) {
-  uint32_t vtor = 0;
-  if (uc_mem_read(uc, SYSCTL_VTOR, &vtor, sizeof(vtor)) != UC_ERR_OK ||
-      vtor == 0) {
-    vtor = vtor_num;
+static bool resolve_irq_pc_from_vtor(uc_engine *uc, uint32_t vtor,
+                                     uint32_t ipsr,
+                                     uint32_t *out_irq_pc) {
+  if (vtor == 0xffffffff) {
+    return false;
   }
-  if (vtor == 0 || irq_pc == 0) return 0;
+
+  uint64_t handler_addr = (uint64_t)vtor + ((uint64_t)ipsr * 4);
+  uint32_t handler_val = 0;
+  if (uc_mem_read(uc, handler_addr, &handler_val,
+                  sizeof(handler_val)) != UC_ERR_OK) {
+    return false;
+  }
+
+  if (handler_val == 0 || handler_val == 0xffffffff) {
+    return false;
+  }
+
+  uint32_t handler_pc = handler_val & ~1u;
+  if (handler_pc < g_code_hook_begin || handler_pc > g_code_hook_end) {
+    return false;
+  }
+
+  if (out_irq_pc) {
+    *out_irq_pc = handler_pc;
+  }
+  return true;
+}
+
+static bool debug_target_irq_is_enabled(void) {
+  if (DEBUG_TARGET_IRQ_NUM <= 0) return false;
+
+  int num_enabled = get_num_enabled();
+  for (int i = 1; i <= num_enabled; i++) {
+    if (nth_enabled_irq_num(i) == DEBUG_TARGET_IRQ_NUM) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void debug_log_target_irq_pc(uc_engine *uc, const char *reason) {
+  if (DEBUG_TARGET_IRQ_NUM <= 0) return;
+
+  uint32_t mem_vtor = 0;
+  uint32_t handler_pc = 0;
+  const char *source = "none";
+
+  uc_mem_read(uc, SYSCTL_VTOR, &mem_vtor, sizeof(mem_vtor));
+
+  if (resolve_irq_pc_from_vtor(uc, mem_vtor, DEBUG_TARGET_IRQ_NUM,
+                               &handler_pc)) {
+    source = "mem_vtor";
+    vtor_num = mem_vtor;
+  } else if (resolve_irq_pc_from_vtor(uc, vtor_num, DEBUG_TARGET_IRQ_NUM,
+                                      &handler_pc)) {
+    source = "cached_vtor";
+  } else if (resolve_irq_pc_from_vtor(uc, (uint32_t)g_code_hook_begin,
+                                      DEBUG_TARGET_IRQ_NUM, &handler_pc)) {
+    source = "code_begin";
+  }
+
+  dt_learning_log("[IRQ_TARGET] reason=%s irq=%d enabled=%d irq_pc=0x%x source=%s mem_vtor=0x%x cached_vtor=0x%x code_begin=0x%llx",
+                  reason ? reason : "unknown", DEBUG_TARGET_IRQ_NUM,
+                  debug_target_irq_is_enabled() ? 1 : 0, handler_pc, source,
+                  mem_vtor, vtor_num,
+                  (unsigned long long)g_code_hook_begin);
+}
+
+static int get_irq_num_from_vector_table(uc_engine *uc, uint32_t irq_pc) {
+  if (irq_pc == 0) return 0;
+
+  uint32_t mem_vtor = 0;
+  uc_mem_read(uc, SYSCTL_VTOR, &mem_vtor, sizeof(mem_vtor));
+
+  uint32_t vtor_candidates[3] = {
+      vtor_num,
+      mem_vtor,
+      (uint32_t)g_code_hook_begin,
+  };
 
   uint32_t target = irq_pc & ~1u;
-  for (int irq_num = EXCEPTION_NO_EXTERNAL_START;
-       irq_num < NVIC_NUM_SUPPORTED_INTERRUPTS; irq_num++) {
-    uint32_t handler_val = 0;
-    uint64_t handler_addr = (uint64_t)vtor + ((uint64_t)irq_num * 4);
-    if (uc_mem_read(uc, handler_addr, &handler_val,
-                    sizeof(handler_val)) != UC_ERR_OK) {
+  for (int c = 0; c < 3; c++) {
+    uint32_t vtor = vtor_candidates[c];
+    if (vtor == 0xffffffff) {
       continue;
     }
-    if (handler_val == 0 || handler_val == 0xffffffff) continue;
 
-    uint32_t handler_pc = handler_val & ~1u;
-    int diff = abs((int)handler_pc - (int)target);
-    if (diff <= 4) {
-      vtor_num = vtor;
-      return irq_num;
+    for (int irq_num = EXCEPTION_NO_EXTERNAL_START;
+         irq_num < NVIC_NUM_SUPPORTED_INTERRUPTS; irq_num++) {
+      uint32_t handler_val = 0;
+      uint64_t handler_addr = (uint64_t)vtor + ((uint64_t)irq_num * 4);
+      if (uc_mem_read(uc, handler_addr, &handler_val,
+                      sizeof(handler_val)) != UC_ERR_OK) {
+        continue;
+      }
+      if (handler_val == 0 || handler_val == 0xffffffff) continue;
+
+      uint32_t handler_pc = handler_val & ~1u;
+      if (handler_pc < g_code_hook_begin || handler_pc > g_code_hook_end) {
+        continue;
+      }
+
+      int diff = abs((int)handler_pc - (int)target);
+      if (diff <= 4) {
+        vtor_num = vtor;
+        return irq_num;
+      }
     }
   }
 
@@ -2339,14 +2859,11 @@ int init_dr_dt_hash() {
 }
 
 // ====== Channel Discovery: Init-time Setup ======
-int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
-                     uint32_t *sr_addrs, int num_srs,
-                     const char *json_path, uint32_t vtor) {
+int store_dr_list(uint32_t *dr_addrs, int num_drs,
+                  const char *json_path, uint32_t vtor) {
   vtor_num = vtor;
   g_num_dr_addrs = (num_drs < MAX_DR_ADDRS) ? num_drs : MAX_DR_ADDRS;
   memcpy(g_all_dr_addrs, dr_addrs, g_num_dr_addrs * sizeof(uint32_t));
-  g_num_sr_addrs = (num_srs < MAX_SR_ADDRS) ? num_srs : MAX_SR_ADDRS;
-  memcpy(g_all_sr_addrs, sr_addrs, g_num_sr_addrs * sizeof(uint32_t));
   if (json_path && json_path[0]) {
     strncpy(g_json_file_path, json_path, sizeof(g_json_file_path) - 1);
   }
@@ -2355,8 +2872,8 @@ int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
     pending_dt_array = calloc(MAX_PENDING_DRS, sizeof(DataTracker));
   }
 
-  dt_learning_log("[STORE_DR_SR] drs=%d srs=%d json=%s vtor=0x%x",
-                  g_num_dr_addrs, g_num_sr_addrs, g_json_file_path, vtor_num);
+  dt_learning_log("[STORE_DR] drs=%d json=%s vtor=0x%x",
+                  g_num_dr_addrs, g_json_file_path, vtor_num);
   return 0;
 }
 
@@ -2385,6 +2902,9 @@ void cleanup_avail_and_pending_hooks(uc_engine *uc) {
     g_discovery_buffer_read_hook = 0;
   }
   g_in_discovery_mode = false;
+  g_discovery_irq_ipsr = 0;
+  g_discovery_cross_irq_skip_count = 0;
+  g_discovery_irq_read_skip_count = 0;
 
   // Clean up post-static-analysis bounds learning hooks.
   if (g_bounds_write_hook) { uc_hook_del(uc, g_bounds_write_hook); g_bounds_write_hook = 0; }
@@ -2424,6 +2944,9 @@ void reset_all_tracker_state(void) {
   g_discovery_dr = 0;
   g_discovery_taint = 0;
   g_discovery_irq_pc = 0;
+  g_discovery_irq_ipsr = 0;
+  g_discovery_cross_irq_skip_count = 0;
+  g_discovery_irq_read_skip_count = 0;
   g_discovery_addr_count = 0;
   g_discovery_buffer_addr = 0;
   g_discovery_mem_write_hook = 0;
@@ -2460,6 +2983,14 @@ void reset_all_tracker_state(void) {
   g_bounds_consumer_log_count = 0;
   g_bounds_read_entry_guess_pc = 0;
   g_bounds_write_hook = 0;
+  g_pseudo_active = false;
+  g_pseudo_callread_pc = 0;
+  g_pseudo_dr = 0;
+  g_pseudo_active_dr_count = 0;
+  g_pseudo_escape_block = 0;
+  g_pseudo_prev_block = 0;
+  g_pseudo_dr_read_diag_count = 0;
+  g_pseudo_escape_skip_irq_log_count = 0;
   memset(g_bounds_consume_pcs, 0, sizeof(g_bounds_consume_pcs));
   g_bounds_num_consume_pcs = 0;
   memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
@@ -2530,6 +3061,205 @@ static int parse_consume_pcs(const char *json, uint32_t *out, int max) {
   return n;
 }
 
+static int count_consume_pcs(const char *json) {
+  uint32_t pcs[64] = {0};
+  return parse_consume_pcs(json, pcs, 64);
+}
+
+static void json_preserve_array_field(const char *json, const char *key,
+                                      char *dst, size_t dst_size) {
+  if (!json || !key || !dst || dst_size == 0) {
+    return;
+  }
+
+  char pattern[64];
+  snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+
+  const char *p = strstr(json, pattern);
+  if (!p) {
+    snprintf(dst, dst_size, "[]");
+    return;
+  }
+
+  const char *start = strchr(p, '[');
+  if (!start) {
+    snprintf(dst, dst_size, "[]");
+    return;
+  }
+
+  int depth = 0;
+  bool in_string = false;
+  bool escaped = false;
+  const char *end = start;
+  while (*end) {
+    char c = *end;
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+    } else {
+      if (c == '"') {
+        in_string = true;
+      } else if (c == '[') {
+        depth++;
+      } else if (c == ']') {
+        depth--;
+        if (depth == 0) {
+          end++;
+          break;
+        }
+      }
+    }
+    end++;
+  }
+
+  if (depth != 0) {
+    snprintf(dst, dst_size, "[]");
+    return;
+  }
+
+  size_t len = (size_t)(end - start);
+  if (len >= dst_size) {
+    len = dst_size - 1;
+  }
+  memcpy(dst, start, len);
+  dst[len] = 0;
+}
+
+static bool dr_has_complete_irq_dt(uint32_t dr) {
+  for (int i = 0; i < irq_dt_array_index; i++) {
+    DataTracker *dt = &irq_dt_array[i];
+    if (dt->dr == dr &&
+        dt->buffer_addr != 0 &&
+        dt->read_pc != 0 &&
+        dt->irq_pc != 0 &&
+        dt->avail_pc != 0 &&
+        dt->consume_pcs[0] != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void parse_pseudo_channels(const char *json) {
+  g_num_pseudo_channels = 0;
+  memset(g_pseudo_channels, 0, sizeof(g_pseudo_channels));
+
+  if (!json) {
+    return;
+  }
+
+  const char *section = strstr(json, "\"pseudo_channels\":");
+  if (!section) {
+    dt_learning_log("[PSEUDO] LOAD count=0 reason=missing");
+    return;
+  }
+
+  const char *p = strstr(section, "[");
+  if (!p) {
+    dt_learning_log("[PSEUDO] LOAD count=0 reason=no_array");
+    return;
+  }
+
+  p++;
+  while (*p && g_num_pseudo_channels < MAX_PSEUDO_CHANNELS) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    if (*p == ']') break;
+
+    const char *obj_start = strstr(p, "{");
+    if (!obj_start) break;
+    const char *obj_end = strstr(obj_start, "}");
+    if (!obj_end) break;
+
+    uint32_t callread_pc = json_extract_int(obj_start, "callread_pc") & ~1u;
+    uint32_t dr = json_extract_int(obj_start, "dr");
+    uint32_t read_pc = json_extract_int(obj_start, "read_pc") & ~1u;
+    uint32_t irq_pc = json_extract_int(obj_start, "irq_pc") & ~1u;
+    uint32_t buffer_addr = json_extract_int(obj_start, "buffer_addr");
+    uint32_t escape_block = json_extract_int(obj_start, "escape_block") & ~1u;
+    uint32_t retry_count = json_extract_int(obj_start, "retry_count");
+
+    if (callread_pc != 0 && dr != 0) {
+      if (dr_has_complete_irq_dt(dr)) {
+        dt_learning_log("[PSEUDO] LOAD_SKIP_RESOLVED dr=0x%x callread=0x%x",
+                        dr, callread_pc);
+      } else {
+        PseudoChannel *ch = &g_pseudo_channels[g_num_pseudo_channels++];
+        ch->callread_pc = callread_pc;
+        ch->dr = dr;
+        ch->read_pc = read_pc;
+        ch->irq_pc = irq_pc;
+        ch->buffer_addr = buffer_addr;
+        ch->escape_block = escape_block;
+        ch->retry_count = retry_count;
+      }
+    }
+
+    p = obj_end + 1;
+    const char *next_brace = strstr(p, "{");
+    const char *next_bracket = strstr(p, "]");
+    if (!next_brace || (next_bracket && next_bracket < next_brace)) break;
+  }
+
+  dt_learning_log("[PSEUDO] LOAD count=%d", g_num_pseudo_channels);
+}
+
+static void parse_main_dt_failures(const char *json) {
+  g_num_main_dt_failures = 0;
+  memset(g_main_dt_failures, 0, sizeof(g_main_dt_failures));
+
+  if (!json) {
+    return;
+  }
+
+  const char *section = strstr(json, "\"main_dt_failures\":");
+  if (!section) {
+    dt_learning_log("[MAIN_DT_FAILURE] LOAD count=0 reason=missing");
+    return;
+  }
+
+  const char *p = strstr(section, "[");
+  if (!p) {
+    dt_learning_log("[MAIN_DT_FAILURE] LOAD count=0 reason=no_array");
+    return;
+  }
+
+  p++;
+  while (*p && g_num_main_dt_failures < MAX_MAIN_DT_FAILURES) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+    if (*p == ']') break;
+
+    const char *obj_start = strstr(p, "{");
+    if (!obj_start) break;
+    const char *obj_end = strstr(obj_start, "}");
+    if (!obj_end) break;
+
+    uint32_t dr = json_extract_int(obj_start, "dr");
+    uint32_t read_pc = json_extract_int(obj_start, "read_pc") & ~1u;
+    uint32_t callread_pc = json_extract_int(obj_start, "callread_pc") & ~1u;
+    uint32_t retry_count = json_extract_int(obj_start, "retry_count");
+
+    if (dr != 0 && read_pc != 0 && callread_pc != 0) {
+      MainDtFailure *failure = &g_main_dt_failures[g_num_main_dt_failures++];
+      failure->dr = dr;
+      failure->read_pc = read_pc;
+      failure->callread_pc = callread_pc;
+      failure->retry_count = retry_count;
+    }
+
+    p = obj_end + 1;
+    const char *next_brace = strstr(p, "{");
+    const char *next_bracket = strstr(p, "]");
+    if (!next_brace || (next_bracket && next_bracket < next_brace)) break;
+  }
+
+  dt_learning_log("[MAIN_DT_FAILURE] LOAD count=%d", g_num_main_dt_failures);
+}
+
 // Reload DT arrays from JSON file
 void json_reload_dt_arrays(uc_engine *uc) {
   if (g_json_file_path[0] == 0) {
@@ -2556,6 +3286,16 @@ void json_reload_dt_arrays(uc_engine *uc) {
   fread(buf, 1, fsize, fp);
   buf[fsize] = '\0';
   fclose(fp);
+
+  json_preserve_array_field(buf, "blacklist",
+                            g_json_blacklist_raw,
+                            sizeof(g_json_blacklist_raw));
+  json_preserve_array_field(buf, "pseudo_channels",
+                            g_json_pseudo_channels_raw,
+                            sizeof(g_json_pseudo_channels_raw));
+  json_preserve_array_field(buf, "main_dt_failures",
+                            g_json_main_dt_failures_raw,
+                            sizeof(g_json_main_dt_failures_raw));
 
   // Parse irq_dt_set array
   const char *irq_section = strstr(buf, "\"irq_dt_set\":");
@@ -2680,6 +3420,9 @@ void json_reload_dt_arrays(uc_engine *uc) {
     }
   }
 
+  parse_pseudo_channels(buf);
+  parse_main_dt_failures(buf);
+
   free(buf);
 
   dt_learning_log("[JSON_RELOAD] irq_dt=%d main_dt=%d",
@@ -2756,6 +3499,7 @@ int per_round_reload(uc_engine *uc) {
 
   // 3. Read JSON & fill known DT arrays
   json_reload_dt_arrays(uc);
+  debug_log_target_irq_pc(uc, "per_round_reload");
 
   // 4. Add normal avail hooks for DTs that are already complete. Incomplete
   // irq_dt entries are intentionally skipped here and handled by bounds
@@ -2800,18 +3544,20 @@ static int write_full_json(void) {
   fprintf(fp, "  \"irq_dt_set\": [\n");
   for (int i = 0; i < irq_dt_array_index; i++) {
     DataTracker *dt = &irq_dt_array[i];
+    const char *consume_pcs = dt->consume_pcs[0] ? dt->consume_pcs : "[]";
+    int consume_count = count_consume_pcs(consume_pcs);
     fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
             "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
             "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
             "\"rx_head\": %u, \"rx_tail\": %u, "
             "\"buffer_len\": %d, \"buffer_min_len\": %d, "
-            "\"consume_count\": 0, "
+            "\"consume_count\": %d, "
             "\"consume_pc_set\": %s}%s\n",
             dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
             dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
-            dt->buffer_len, dt->buffer_min_len,
-            dt->consume_pcs[0] ? dt->consume_pcs : "[]",
-            (i < irq_dt_array_index - 1 || main_dt_array_index > 0) ? "," : "");
+            dt->buffer_len, dt->buffer_min_len, consume_count,
+            consume_pcs,
+            (i < irq_dt_array_index - 1) ? "," : "");
   }
   fprintf(fp, "  ],\n");
 
@@ -2819,17 +3565,19 @@ static int write_full_json(void) {
   fprintf(fp, "  \"main_dt_set\": [\n");
   for (int i = 0; i < main_dt_array_index; i++) {
     DataTracker *dt = &main_dt_array[i];
+    const char *consume_pcs = dt->consume_pcs[0] ? dt->consume_pcs : "[]";
+    int consume_count = count_consume_pcs(consume_pcs);
     fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
             "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
             "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
             "\"rx_head\": %u, \"rx_tail\": %u, "
             "\"buffer_len\": %d, \"buffer_min_len\": %d, "
-            "\"consume_count\": 0, "
+            "\"consume_count\": %d, "
             "\"consume_pc_set\": %s}%s\n",
             dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
             dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
-            dt->buffer_len, dt->buffer_min_len,
-            dt->consume_pcs[0] ? dt->consume_pcs : "[]",
+            dt->buffer_len, dt->buffer_min_len, consume_count,
+            consume_pcs,
             (i < main_dt_array_index - 1) ? "," : "");
   }
   fprintf(fp, "  ],\n");
@@ -2848,7 +3596,9 @@ static int write_full_json(void) {
   fprintf(fp, "],\n");
 
   // Remaining fields (empty, for semu-fuzz compatibility)
-  fprintf(fp, "  \"blacklist\": [],\n");
+  fprintf(fp, "  \"blacklist\": %s,\n", g_json_blacklist_raw);
+  fprintf(fp, "  \"pseudo_channels\": %s,\n", g_json_pseudo_channels_raw);
+  fprintf(fp, "  \"main_dt_failures\": %s,\n", g_json_main_dt_failures_raw);
   fprintf(fp, "  \"indirect_src_addrs\": [],\n");
   fprintf(fp, "  \"data_regs\": [],\n");
   fprintf(fp, "  \"avail_dt_dict\": {},\n");
@@ -2885,8 +3635,99 @@ void set_code_hook_range(uint64_t begin, uint64_t size) {
                   (unsigned long long)size);
 }
 
+void set_function_entries(uint32_t *entries, int num_entries) {
+  g_num_function_entries = 0;
+  memset(g_function_entries, 0, sizeof(g_function_entries));
+
+  if (!entries || num_entries <= 0) {
+    dt_learning_log("[PSEUDO] FUNC_ENTRIES count=0");
+    return;
+  }
+
+  if (num_entries > MAX_FUNCTION_ENTRIES) {
+    num_entries = MAX_FUNCTION_ENTRIES;
+  }
+
+  for (int i = 0; i < num_entries; i++) {
+    uint32_t pc = entries[i] & ~1u;
+    if (pc == 0) {
+      continue;
+    }
+    g_function_entries[g_num_function_entries++] = pc;
+  }
+
+  qsort(g_function_entries, g_num_function_entries,
+        sizeof(g_function_entries[0]), compare_u32_value);
+
+  int out = 0;
+  for (int i = 0; i < g_num_function_entries; i++) {
+    if (out == 0 || g_function_entries[i] != g_function_entries[out - 1]) {
+      g_function_entries[out++] = g_function_entries[i];
+    }
+  }
+  g_num_function_entries = out;
+
+  dt_learning_log("[PSEUDO] FUNC_ENTRIES count=%d", g_num_function_entries);
+}
+
+void set_indirect_map_path(const char *path) {
+  if (!path) {
+    g_indirect_map_path[0] = 0;
+    return;
+  }
+
+  snprintf(g_indirect_map_path, sizeof(g_indirect_map_path), "%s", path);
+  dt_learning_log("[INDIRECT] MAP_PATH %s", g_indirect_map_path);
+}
+
+void set_indirect_enabled(int enabled) {
+  g_indirect_enabled = enabled ? true : false;
+  if (!g_indirect_enabled) {
+    g_num_indirect_sites = 0;
+  }
+  dt_learning_log("[INDIRECT] ENABLED %d", g_indirect_enabled ? 1 : 0);
+}
+
+void set_indirect_call_sites(uint32_t *sites, int num_sites) {
+  g_num_indirect_sites = 0;
+
+  if (!g_indirect_enabled) {
+    dt_learning_log("[INDIRECT] SITES skipped reason=disabled");
+    return;
+  }
+
+  if (!sites || num_sites <= 0) {
+    dt_learning_log("[INDIRECT] SITES empty");
+    return;
+  }
+
+  if (num_sites > MAX_INDIRECT_CALL_SITES) {
+    num_sites = MAX_INDIRECT_CALL_SITES;
+  }
+
+  for (int i = 0; i < num_sites; i++) {
+    g_indirect_sites[g_num_indirect_sites].src_pc = sites[i] & ~1u;
+    g_num_indirect_sites++;
+  }
+
+  qsort(g_indirect_sites, g_num_indirect_sites,
+        sizeof(g_indirect_sites[0]), compare_indirect_site);
+  dt_learning_log("[INDIRECT] SITES count=%d", g_num_indirect_sites);
+}
+
 void set_ghidra_callback(void *cb) {
-    g_ghidra_callback = cb;
+  g_ghidra_callback = cb;
+}
+
+static void signal_ghidra_pending(const char *reason, uint32_t dr) {
+  if (!g_ghidra_callback) return;
+  int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  if (fd >= 0) {
+    write(fd, g_json_file_path, strlen(g_json_file_path));
+    close(fd);
+    dt_learning_log("[GHIDRA_PENDING] path=%s reason=%s dr=0x%x",
+                    g_json_file_path, reason ? reason : "unknown", dr);
+  }
 }
 
 // ====== Channel Discovery: Callbacks ======
@@ -2897,38 +3738,61 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
 
   uint32_t dr = (uint32_t)address;
 
-  if (g_in_discovery_mode) {
-    // Already in discovery, ignore further DR reads
-    return;
-  }
-
   uint32_t ipsr = 0;
   uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
   uint32_t pc = 0;
   uc_reg_read(uc, UC_ARM_REG_PC, &pc);
 
+  if (g_pseudo_dr_read_diag_count < 512) {
+    dt_learning_log("[DISCOVERY] DR_READ_AFTER_DIAG dr=0x%x pc=0x%x ipsr=0x%x size=%d value=0x%llx pseudo_active=%d pseudo_callread=0x%x in_discovery=%d",
+                    dr, pc, ipsr, size, (unsigned long long)value,
+                    g_pseudo_active ? 1 : 0,
+                    g_pseudo_callread_pc,
+                    g_in_discovery_mode ? 1 : 0);
+    g_pseudo_dr_read_diag_count++;
+  }
+  if (g_in_discovery_mode) {
+    // Already in discovery, ignore further DR reads
+    return;
+  }
+
   if (ipsr != 0) {
     // === IRQ context → interrupt-read type ===
     dt_learning_log("[DISCOVERY] IRQ_DR_READ dr=0x%x ipsr=0x%x pc=0x%x",
                     dr, ipsr, pc);
+    debug_log_target_irq_pc(uc, "irq_dr_read");
 
     g_discovery_dr = dr;
     g_discovery_taint = 0xAA;  // magic token byte, not full word
 
-    // Read VTOR from CPU register
-    uint32_t vtor = 0;
-    uc_mem_read(uc, 0xE000ED08, &vtor, 4);
-    vtor_num = vtor;  // also cache globally
+    uint32_t mem_vtor = 0;
+    uint32_t resolved_vtor = 0;
+    uint32_t resolved_irq_pc = 0;
 
-    // Calculate IRQ PC from vector table
-    uint64_t handler_addr = vtor + ((uint64_t)ipsr * 4);
-    uint32_t handler_val = 0;
-    uc_mem_read(uc, handler_addr, &handler_val, sizeof(handler_val));
-    g_discovery_irq_pc = handler_val - 1;  // thumb bit adjustment
+    uc_mem_read(uc, SYSCTL_VTOR, &mem_vtor, sizeof(mem_vtor));
+
+    if (resolve_irq_pc_from_vtor(uc, vtor_num, ipsr, &resolved_irq_pc)) {
+      resolved_vtor = vtor_num;
+    } else if (resolve_irq_pc_from_vtor(uc, mem_vtor, ipsr,
+                                        &resolved_irq_pc)) {
+      resolved_vtor = mem_vtor;
+    } else if (resolve_irq_pc_from_vtor(uc, (uint32_t)g_code_hook_begin, ipsr,
+                                        &resolved_irq_pc)) {
+      resolved_vtor = (uint32_t)g_code_hook_begin;
+    } else {
+      dt_learning_log("[DISCOVERY] IRQ_PC_INVALID dr=0x%x ipsr=0x%x pc=0x%x mem_vtor=0x%x cached_vtor=0x%x",
+                      dr, ipsr, pc, mem_vtor, vtor_num);
+      return;
+    }
+
+    vtor_num = resolved_vtor;
+    g_discovery_irq_pc = resolved_irq_pc;
+    g_discovery_irq_ipsr = ipsr;
+    g_discovery_cross_irq_skip_count = 0;
+    g_discovery_irq_read_skip_count = 0;
 
     dt_learning_log("[DISCOVERY] IRQ_PC dr=0x%x irq_pc=0x%x vtor=0x%x ipsr=0x%x",
-                    dr, g_discovery_irq_pc, vtor, ipsr);
-
+                    dr, g_discovery_irq_pc, resolved_vtor, ipsr);
     // // Remove ALL pending DR hooks to prevent interference this round.
     // // They will be properly rebuilt by per_round_reload next round.
     // for (int i = 0; i < g_num_pending_hooks; i++) {
@@ -2954,6 +3818,21 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     uint32_t lr = 0;
     uc_reg_read(uc, UC_ARM_REG_LR, &lr);
 
+    uint32_t matched_callread = 0;
+    uint32_t main_retry_count = 0;
+    if (is_known_main_dt_failure(dr, pc, lr, &matched_callread,
+                                  &main_retry_count)) {
+      if (main_retry_count >= MAIN_DT_MAX_RETRY) {
+        dt_learning_log("[DISCOVERY] SKIP_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x raw_lr=0x%x matched=0x%x retry=%u max=%u",
+                        dr, pc, lr, matched_callread, main_retry_count,
+                        MAIN_DT_MAX_RETRY);
+        return;
+      }
+      dt_learning_log("[DISCOVERY] RETRY_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x raw_lr=0x%x matched=0x%x retry=%u max=%u",
+                      dr, pc, lr, matched_callread, main_retry_count,
+                      MAIN_DT_MAX_RETRY);
+    }
+
     // Create main_dt with read_pc and callread_pc
     DataTracker *dt = &main_dt_array[main_dt_array_index];
     memset(dt, 0, sizeof(DataTracker));
@@ -2974,20 +3853,9 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
 
     dt_learning_log("[DISCOVERY] MAIN_DT dr=0x%x read_pc=0x%x callread_pc=0x%x",
                     dr, pc, lr);
-
-    // Signal Ghidra daemon: write JSON path to pending file
-    if (g_ghidra_callback) {
-      int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
-      if (fd >= 0) {
-        write(fd, g_json_file_path, strlen(g_json_file_path));
-        close(fd);
-        dt_learning_log("[GHIDRA_PENDING] path=%s reason=main_dt dr=0x%x",
-                        g_json_file_path, dr);
-      }
-    }
-
-    // Write updated JSON
+    // Write updated JSON before notifying the Ghidra daemon.
     write_full_json();
+    signal_ghidra_pending("main_dt", dr);
 
     g_discovery_occurred = true;
     do_exit(uc, UC_ERR_OK);
@@ -3005,7 +3873,20 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
 
   if (ipsr != 0) {
     // ---- In IRQ context: track taint-matching writes ----
+
     if ((uint32_t)value == g_discovery_taint) {
+      if (g_discovery_irq_ipsr != 0 && ipsr != g_discovery_irq_ipsr) {
+        if (g_discovery_cross_irq_skip_count < 16) {
+          uint32_t pc = 0;
+          uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+          dt_learning_log("[DISCOVERY] TAINT_WRITE_SKIP_IRQ dr=0x%x expected_ipsr=0x%x actual_ipsr=0x%x pc=0x%x addr=0x%x val=0x%x",
+                          g_discovery_dr, g_discovery_irq_ipsr, ipsr, pc,
+                          (uint32_t)address, (uint32_t)value);
+        }
+        g_discovery_cross_irq_skip_count++;
+        return;
+      }
+
       // Always track write addresses (Phase 1 buffer-addr discovery)
       if (g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
         g_discovery_addr_list[g_discovery_addr_count++] = (uint32_t)address;
@@ -3018,8 +3899,28 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
     // ---- In main loop context ----
     if (g_discovery_addr_count > 0 && g_discovery_buffer_addr == 0) {
       // buffer_addr just found; capture the main-loop read site next.
-      g_discovery_buffer_addr =
+      uint32_t learned_addr =
           g_discovery_addr_list[g_discovery_addr_count - 1];
+      PseudoChannel *hint = find_pseudo_buffer_hint(g_discovery_dr,
+                                                   g_discovery_irq_pc);
+      if (hint) {
+        uint32_t diff = learned_addr > hint->buffer_addr
+            ? learned_addr - hint->buffer_addr
+            : hint->buffer_addr - learned_addr;
+        g_discovery_buffer_addr = hint->buffer_addr;
+        if (diff > 16) {
+          dt_learning_log("[DISCOVERY] BUFFER_ADDR_REUSE_WARN dr=0x%x irq_pc=0x%x learned=0x%x reused=0x%x diff=%u callread=0x%x writes=%d",
+                          g_discovery_dr, g_discovery_irq_pc, learned_addr,
+                          g_discovery_buffer_addr, diff, hint->callread_pc,
+                          g_discovery_addr_count);
+        }
+        dt_learning_log("[DISCOVERY] BUFFER_ADDR_REUSE_PSEUDO dr=0x%x irq_pc=0x%x learned=0x%x reused=0x%x callread=0x%x writes=%d",
+                        g_discovery_dr, g_discovery_irq_pc, learned_addr,
+                        g_discovery_buffer_addr, hint->callread_pc,
+                        g_discovery_addr_count);
+      } else {
+        g_discovery_buffer_addr = learned_addr;
+      }
       dt_learning_log("[DISCOVERY] BUFFER_ADDR dr=0x%x buf=0x%x writes=%d",
                       g_discovery_dr, g_discovery_buffer_addr,
                       g_discovery_addr_count);
@@ -3038,7 +3939,7 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
 
 // ====== Channel Discovery: Phase 1 buffer read callback ======
 
-// Fires when main loop reads the discovered buffer address.
+// Fires when the discovered buffer address is read.
 // Captures read_pc (PC at buffer read) and callread_pc (LR = caller).
 // Bounds are inferred later, after static analysis supplies avail/consume PCs.
 void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
@@ -3049,7 +3950,17 @@ void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
 
   uint32_t ipsr = 0;
   uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
-  if (ipsr != 0) return; // only capture in main loop
+  if (ipsr != 0) {
+    if (g_discovery_irq_read_skip_count < 16) {
+      uint32_t skip_pc = 0;
+      uc_reg_read(uc, UC_ARM_REG_PC, &skip_pc);
+      dt_learning_log("[DISCOVERY] BUFFER_READ_PC_SKIP_IRQ dr=0x%x pc=0x%x ipsr=0x%x buf=0x%x",
+                      g_discovery_dr, skip_pc, ipsr,
+                      g_discovery_buffer_addr);
+    }
+    g_discovery_irq_read_skip_count++;
+    return;
+  }
 
   uint32_t pc = 0;
   uint32_t lr = 0;
@@ -3065,9 +3976,9 @@ void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     g_discovery_buffer_read_hook = 0;
   }
 
-  dt_learning_log("[DISCOVERY] BUFFER_READ_PC dr=0x%x read_pc=0x%x callread_pc=0x%x",
+  dt_learning_log("[DISCOVERY] BUFFER_READ_PC dr=0x%x read_pc=0x%x callread_pc=0x%x ipsr=0x%x in_irq=%d",
                   g_discovery_dr, g_discovery_read_pc,
-                  g_discovery_callread_pc);
+                  g_discovery_callread_pc, ipsr, ipsr != 0 ? 1 : 0);
 
   try_finalize(uc);
 }
@@ -3688,6 +4599,36 @@ static void finalize_discovery(uc_engine *uc) {
   }
   g_in_discovery_mode = false;
 
+  uint32_t matched_callread = 0;
+  uint32_t pseudo_retry_count = 0;
+  if (is_known_pseudo_callread(g_discovery_dr, g_discovery_callread_pc,
+                               &matched_callread, &pseudo_retry_count)) {
+    if (pseudo_retry_count >= PSEUDO_MAX_RETRY) {
+      dt_learning_log("[DISCOVERY] SKIP_KNOWN_PSEUDO dr=0x%x raw_callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
+                      g_discovery_dr, g_discovery_callread_pc,
+                      matched_callread, pseudo_retry_count,
+                      PSEUDO_MAX_RETRY, g_discovery_read_pc,
+                      g_discovery_buffer_addr, g_discovery_irq_pc);
+      g_read_pc_done = false;
+      g_discovery_dr = 0;
+      g_discovery_irq_pc = 0;
+      g_discovery_irq_ipsr = 0;
+      g_discovery_cross_irq_skip_count = 0;
+      g_discovery_irq_read_skip_count = 0;
+      g_discovery_buffer_addr = 0;
+      g_discovery_read_pc = 0;
+      g_discovery_callread_pc = 0;
+      g_discovery_addr_count = 0;
+      return;
+    }
+
+    dt_learning_log("[DISCOVERY] RETRY_KNOWN_PSEUDO dr=0x%x raw_callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
+                    g_discovery_dr, g_discovery_callread_pc,
+                    matched_callread, pseudo_retry_count,
+                    PSEUDO_MAX_RETRY, g_discovery_read_pc,
+                    g_discovery_buffer_addr, g_discovery_irq_pc);
+  }
+
   // 2. Create full irq_dt from discovery data
   uint32_t dr = g_discovery_dr;
   DataTracker *dt = &irq_dt_array[irq_dt_array_index];
@@ -3704,17 +4645,6 @@ static void finalize_discovery(uc_engine *uc) {
   dt->rx_head = 0;
   dt->rx_tail = 0;
 
-  // Signal Ghidra daemon: write JSON path to pending file
-  if (g_ghidra_callback) {
-    int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
-    if (fd >= 0) {
-      write(fd, g_json_file_path, strlen(g_json_file_path));
-      close(fd);
-      dt_learning_log("[GHIDRA_PENDING] path=%s reason=irq_dt dr=0x%x",
-                      g_json_file_path, dr);
-    }
-  }
-
   dt_learning_log("[DISCOVERY] IRQ_DT_PENDING dr=0x%x irq_pc=0x%x buf=0x%x read_pc=0x%x callread_pc=0x%x",
                   dt->dr, dt->irq_pc, dt->buffer_addr,
                   dt->read_pc, dt->callread_pc);
@@ -3726,9 +4656,9 @@ static void finalize_discovery(uc_engine *uc) {
     kh_value(hash_table, k) = dt;
   }
   irq_dt_array_index++;
-
-  // 3. Write updated JSON
+  // 3. Write updated JSON before notifying the Ghidra daemon.
   write_full_json();
+  signal_ghidra_pending("irq_dt", dr);
 
   // Clean up pending reference to this DR
   for (int i = 0; i < pending_dt_array_index; i++) {

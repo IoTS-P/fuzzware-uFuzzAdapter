@@ -38,6 +38,7 @@ from ghidra.app.cmd.function import DecompilerSwitchAnalysisCmd
 import sys
 import os
 import time
+import ast
 import Queue as queue
 
 
@@ -2316,10 +2317,16 @@ def setup_process(callread_addr,read_addr,entry_point,irq_pc = None,buffer_addr 
     get_global_symbols()
     
     lst = [callread_addr,read_addr,entry_point,irq_pc,buffer_addr]
+    optional_indices = set([3, 4])  # irq_pc, buffer_addr
+
     for index in range(len(lst)):
         member = lst[index]
-        if not member:
+
+        if member in (None, '', 0, '0', '0x0', '0X0'):
+            if index in optional_indices:
+                lst[index] = None
             continue
+        
         try:
             member = toAddr(hex(int(member)))
             lst[index] = member
@@ -2345,7 +2352,7 @@ def setup_process(callread_addr,read_addr,entry_point,irq_pc = None,buffer_addr 
     if filename and os.path.isfile(filename):
         with open(filename, 'r') as file:
             # callinds_dict.update(file.read().eval())
-            content = eval(file.read())
+            content = ast.literal_eval(file.read())
             for key,value in content.items():
                 try:
                     key_addr = toAddr(hex(int(key)))

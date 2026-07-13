@@ -322,6 +322,30 @@ def set_code_hook_range(begin, size):
     _setup_prototype(native_lib, "set_code_hook_range", None, ctypes.c_uint64, ctypes.c_uint64)
     native_lib.set_code_hook_range(begin, size)
 
+def set_function_entries(entries):
+    global native_lib
+    _setup_prototype(native_lib, "set_function_entries", None,
+                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int)
+    arr = (ctypes.c_uint32 * len(entries))(*entries) if entries else (ctypes.c_uint32 * 0)()
+    native_lib.set_function_entries(arr, len(entries))
+
+def set_indirect_enabled(enabled):
+    global native_lib
+    _setup_prototype(native_lib, "set_indirect_enabled", None, ctypes.c_int)
+    native_lib.set_indirect_enabled(1 if enabled else 0)
+
+def set_indirect_map_path(path):
+    global native_lib
+    _setup_prototype(native_lib, "set_indirect_map_path", None, ctypes.c_char_p)
+    native_lib.set_indirect_map_path(path.encode() if path else None)
+
+def set_indirect_call_sites(sites):
+    global native_lib
+    _setup_prototype(native_lib, "set_indirect_call_sites", None,
+                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int)
+    arr = (ctypes.c_uint32 * len(sites))(*sites) if sites else (ctypes.c_uint32 * 0)()
+    native_lib.set_indirect_call_sites(arr, len(sites))
+
 def do_exit(uc, status, sig=-1):
     global native_lib
     native_lib.do_exit(uc._uch, status)
@@ -425,13 +449,14 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
     #ufuzz_adapter_add_avail_hook(uc_engine *uc)
     _setup_prototype(native_lib, "ufuzz_adapter_add_avail_hook", ctypes.c_int, uc_engine)
     # Channel discovery
-    _setup_prototype(native_lib, "store_dr_sr_list", ctypes.c_int,
-                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
+    _setup_prototype(native_lib, "store_dr_list", ctypes.c_int,
                      ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
                      ctypes.c_char_p, ctypes.c_uint32)
     _setup_prototype(native_lib, "per_round_reload", ctypes.c_int, uc_engine)
 
     _setup_prototype(native_lib, "set_code_hook_range", None, ctypes.c_uint64, ctypes.c_uint64)
+    _setup_prototype(native_lib, "set_function_entries", None,
+                     ctypes.POINTER(ctypes.c_uint32), ctypes.c_int)
     _setup_prototype(native_lib, "set_ghidra_callback", None, ctypes.c_void_p)
 
     mmio_region_starts, mmio_region_ends = zip(*mmio_regions)

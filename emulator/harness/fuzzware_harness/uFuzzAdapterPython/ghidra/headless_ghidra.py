@@ -212,8 +212,9 @@ def ghidra_run_script(port, script_type, args=[]):
         logger.info("Ghidra callind_collect: %d items", len(response) if isinstance(response, list) else 0)
         return response
     elif script_type == "correct_lr":
-        logger.info("Ghidra correct_lr: %s → 0x%x", args[0] if args else '?', response)
-        return int(response, 16)
+        corrected = int(response, 16)
+        logger.info("Ghidra correct_lr: %s -> 0x%x", args[0] if args else '?', corrected)
+        return corrected
     elif script_type == "get_ancestor":
         logger.info("Ghidra get_ancestor: %s", response)
         if response == [None]:

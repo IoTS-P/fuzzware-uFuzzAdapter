@@ -163,12 +163,15 @@ int stop_for_firmware_read_datareg();
 
 // Ghidra static analysis callback (called from Python via ctypes)
 void set_code_hook_range(uint64_t begin, uint64_t size);
+void set_function_entries(uint32_t *entries, int num_entries);
 void set_ghidra_callback(void *cb);
+void set_indirect_enabled(int enabled);
+void set_indirect_map_path(const char *path);
+void set_indirect_call_sites(uint32_t *sites, int num_sites);
 
 // Channel discovery functions
-int store_dr_sr_list(uint32_t *dr_addrs, int num_drs,
-                     uint32_t *sr_addrs, int num_srs,
-                     const char *json_path, uint32_t vtor);
+int store_dr_list(uint32_t *dr_addrs, int num_drs,
+                  const char *json_path, uint32_t vtor);
 int per_round_reload(uc_engine *uc);
 void reset_all_tracker_state(void);
 void cleanup_avail_and_pending_hooks(uc_engine *uc);

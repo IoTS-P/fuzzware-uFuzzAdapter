@@ -275,8 +275,21 @@ def configure_unicorn(args):
         text_size = parse_address_value(uc.symbols, text_region["size"])
         if text_size:
             native.set_code_hook_range(text_base, text_size)
+            function_entries = []
+            for addr in uc.syms_by_addr.keys():
+                try:
+                    addr_int = int(addr, 0) if isinstance(addr, str) else int(addr)
+                except Exception:
+                    continue
+                addr_int &= ~1
+                if text_base <= addr_int < text_base + text_size:
+                    function_entries.append(addr_int)
+            function_entries = sorted(set(function_entries))
+            native.set_function_entries(function_entries)
             logger.info("Native code hook range: 0x%x-0x%x",
                         text_base, text_base + text_size - 1)
+            logger.info("Native function entries for pseudo escape: %d",
+                        len(function_entries))
         else:
             logger.warning("Native code hook range not set: text region size is zero")
     else:
@@ -297,16 +310,15 @@ def configure_unicorn(args):
     from .native import native_lib
     import ctypes
 
-    # Pass DR/SR lists and JSON path to C layer for channel discovery
+    # Pass DR list and JSON path to C layer for channel discovery
     binary_dir = os.path.dirname(config["binary_file"])
     rule_file = find_rule_file(binary_dir)
     if rule_file:
-        dr_addrs, sr_addrs = parse_rule_file(rule_file)
+        dr_addrs = parse_rule_file(rule_file)
         json_path = find_json_file(binary_dir) or os.path.join(binary_dir, "discovered_channels.json")
-        logging.info(f"Rule file: {rule_file}, {len(dr_addrs)} DRs, {len(sr_addrs)} SRs, JSON: {json_path}")
-        native_lib.store_dr_sr_list(
+        logging.info(f"DR list file: {rule_file}, {len(dr_addrs)} DRs, JSON: {json_path}")
+        native_lib.store_dr_list(
             (ctypes.c_uint32 * len(dr_addrs))(*dr_addrs), len(dr_addrs),
-            (ctypes.c_uint32 * len(sr_addrs))(*sr_addrs), len(sr_addrs),
             json_path.encode() if json_path else None,
             vtor
         )
@@ -314,8 +326,7 @@ def configure_unicorn(args):
         json_path = find_json_file(binary_dir)
         if json_path:
             logging.info(f"No rule file, using JSON: {json_path}")
-            native_lib.store_dr_sr_list(
-                (ctypes.c_uint32 * 0)(), 0,
+            native_lib.store_dr_list(
                 (ctypes.c_uint32 * 0)(), 0,
                 json_path.encode(), vtor
             )
@@ -338,15 +349,230 @@ def configure_unicorn(args):
             ghidra_port = start_ghidra(elf_path, binary_dir)
             if ghidra_port:
                 entry = config['entry_point']
+                indirect_dir = os.path.join(binary_dir, "indirect_calls")
+                indirect_env = os.environ.get("FUZZWARE_DT_INDIRECT_ENABLE", "1").strip().lower()
+                indirect_dynamic_enabled = indirect_env not in ("0", "false", "no", "off")
+                if indirect_dynamic_enabled:
+                    os.makedirs(indirect_dir, exist_ok=True)
+                native.set_indirect_enabled(indirect_dynamic_enabled)
+                logging.info("[INDIRECT] dynamic_monitor=%d env=%s",
+                             1 if indirect_dynamic_enabled else 0, indirect_env)
+
+                def _parse_hex_or_int(value):
+                    if isinstance(value, int):
+                        return value
+                    value = str(value)
+                    return int(value, 16) if value.startswith("0x") else int(value)
+
+                def _load_or_collect_indirect_sites():
+                    import json as _json_ind
+
+                    sites_path = os.path.join(indirect_dir, "indirect_call_sites.json")
+                    if os.path.exists(sites_path):
+                        with open(sites_path, "r") as _f:
+                            data = _json_ind.load(_f)
+                        sites = data.get("sites", [])
+                        return [_parse_hex_or_int(x) for x in sites], sites_path
+
+                    sites = ghidra_run_script(ghidra_port, "callind_collect", []) or []
+                    with open(sites_path, "w") as _f:
+                        _json_ind.dump({"sites": sites}, _f, indent=2)
+                    return [_parse_hex_or_int(x) for x in sites], sites_path
+
+                def _merge_indirect_worker_maps():
+                    import ast as _ast
+                    import glob as _glob
+                    import json as _json_ind
+
+                    if not os.path.isdir(indirect_dir):
+                        return "", {}
+
+                    merged = {}
+                    merged_path = os.path.join(indirect_dir, "dynamic_indirect_map.merged.txt")
+                    pattern = os.path.join(indirect_dir, "dynamic_indirect_map.worker_*.jsonl")
+                    for map_path in _glob.glob(pattern):
+                        try:
+                            with open(map_path, "r") as _f:
+                                for line in _f:
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    item = _json_ind.loads(line)
+                                    src = _parse_hex_or_int(item["src"])
+                                    target = _parse_hex_or_int(item["target"])
+                                    if src not in merged:
+                                        merged[src] = target
+                        except Exception as e:
+                            logging.warning("[INDIRECT] skip worker map %s: %s", map_path, e)
+
+                    if not merged:
+                        if os.path.exists(merged_path):
+                            try:
+                                with open(merged_path, "r") as _f:
+                                    old = _ast.literal_eval(_f.read())
+                                if isinstance(old, dict) and old:
+                                    reused = {
+                                        _parse_hex_or_int(k): _parse_hex_or_int(v)
+                                        for k, v in old.items()
+                                    }
+                                    logging.info("[INDIRECT] reuse merged map path=%s known=%d",
+                                                 merged_path, len(reused))
+                                    return merged_path, reused
+                            except Exception as e:
+                                logging.warning("[INDIRECT] failed to reuse merged map %s: %s",
+                                                merged_path, e)
+                        return "", {}
+
+                    with open(merged_path, "w") as _f:
+                        _f.write(repr(merged))
+                    return merged_path, merged
 
                 # Mark Ghidra as enabled (C code checks g_ghidra_callback != NULL)
                 native_lib.set_ghidra_callback(ctypes.c_void_p(1))
+
+                if indirect_dynamic_enabled:
+                    indirect_sites, indirect_sites_path = _load_or_collect_indirect_sites()
+                    indirect_map_path, known_map = _merge_indirect_worker_maps()
+                    unresolved_sites = [
+                        site for site in indirect_sites
+                        if site not in known_map
+                    ]
+                    native.set_indirect_call_sites(unresolved_sites)
+                    logging.info(
+                        "[INDIRECT] static sites=%d known=%d unresolved=%d sites_path=%s map_path=%s",
+                        len(indirect_sites), len(known_map), len(unresolved_sites),
+                        indirect_sites_path, indirect_map_path)
+                    if not unresolved_sites:
+                        logging.info("[INDIRECT] all callind sites already resolved; dynamic indirect monitor disabled")
+
+                    worker_map_path = os.path.join(
+                        indirect_dir,
+                        "dynamic_indirect_map.worker_%d.jsonl" % os.getpid()
+                    )
+                    native.set_indirect_map_path(worker_map_path)
+                    logging.info("[INDIRECT] worker map path=%s", worker_map_path)
+                else:
+                    indirect_map_path, known_map = _merge_indirect_worker_maps()
+                    native.set_indirect_call_sites([])
+                    native.set_indirect_map_path(None)
+                    logging.info(
+                        "[INDIRECT] dynamic monitor disabled; known=%d map_path=%s",
+                        len(known_map), indirect_map_path if indirect_map_path else "<none>")
 
                 # Non-blocking daemon: poll /tmp/ghidra_pending, run Ghidra, patch JSON
                 import time as _time
                 def _ghidra_daemon():
                     import json as _json2
                     pending = "/tmp/ghidra_pending"
+                    def _has_avail(dt):
+                        return dt.get('avail_pc', '0x0') not in ('0x0', '0', 0, None, '')
+
+                    def _same_dt(a, b):
+                        return (
+                            a.get('dr') == b.get('dr') and
+                            a.get('read_pc') == b.get('read_pc') and
+                            a.get('buffer_addr') == b.get('buffer_addr') and
+                            a.get('irq_pc', '0x0') == b.get('irq_pc', '0x0')
+                        )
+
+                    def _find_dt_index(data_obj, key_name, target_dt):
+                        for idx, item in enumerate(data_obj.get(key_name, [])):
+                            if _same_dt(item, target_dt):
+                                return idx
+                        return -1
+
+                    def _hex_or_zero(value):
+                        try:
+                            if value in (None, '', '0x0', '0', 0):
+                                return '0x0'
+                            if isinstance(value, str):
+                                value = value.strip()
+                                if value in ('', '0x0', '0'):
+                                    return '0x0'
+                                return hex(int(value, 16))
+                            return hex(int(value))
+                        except Exception:
+                            return '0x0'
+
+                    def _same_hex(a, b):
+                        return _hex_or_zero(a).lower() == _hex_or_zero(b).lower()
+
+                    def _int_or_zero(value):
+                        try:
+                            return int(value)
+                        except Exception:
+                            return 0
+
+                    def _clear_resolved_pseudo(data_obj, dr_hex, callread_hex):
+                        old_pseudo = data_obj.get('pseudo_channels', [])
+                        new_pseudo = [
+                            item for item in old_pseudo
+                            if not (
+                                _same_hex(item.get('dr', '0x0'), dr_hex) and
+                                _same_hex(item.get('callread_pc', '0x0'), callread_hex)
+                            )
+                        ]
+                        data_obj['pseudo_channels'] = new_pseudo
+                        removed_pseudo = len(old_pseudo) - len(new_pseudo)
+
+                        still_has_same_callread = any(
+                            _same_hex(item.get('callread_pc', '0x0'), callread_hex)
+                            for item in new_pseudo
+                        )
+
+                        removed_blacklist = 0
+                        if not still_has_same_callread:
+                            old_blacklist = data_obj.get('blacklist', [])
+                            data_obj['blacklist'] = [
+                                item for item in old_blacklist
+                                if not _same_hex(item, callread_hex)
+                            ]
+                            removed_blacklist = len(old_blacklist) - len(data_obj['blacklist'])
+
+                        return removed_blacklist, removed_pseudo
+
+                    def _clear_main_dt_failure(data_obj, dr_hex, read_pc_hex, callread_hex):
+                        old_failures = data_obj.get('main_dt_failures', [])
+                        new_failures = [
+                            item for item in old_failures
+                            if not (
+                                _same_hex(item.get('dr', '0x0'), dr_hex) and
+                                _same_hex(item.get('read_pc', '0x0'), read_pc_hex) and
+                                _same_hex(item.get('callread_pc', '0x0'), callread_hex)
+                            )
+                        ]
+                        data_obj['main_dt_failures'] = new_failures
+                        return len(old_failures) - len(new_failures)
+
+                    def _record_main_dt_failure(data_obj, dr_hex, read_pc_hex, callread_hex):
+                        failures = data_obj.setdefault('main_dt_failures', [])
+                        failure_entry = {
+                            'dr': dr_hex,
+                            'read_pc': read_pc_hex,
+                            'callread_pc': callread_hex,
+                            'retry_count': 1,
+                        }
+                        for item in failures:
+                            if (_same_hex(item.get('dr', '0x0'), dr_hex) and
+                                    _same_hex(item.get('read_pc', '0x0'), read_pc_hex) and
+                                    _same_hex(item.get('callread_pc', '0x0'), callread_hex)):
+                                retry_count = _int_or_zero(item.get('retry_count', 0)) + 1
+                                item.update(failure_entry)
+                                item['retry_count'] = retry_count
+                                return item
+                        failures.append(failure_entry)
+                        return failure_entry
+
+                    def _get_escape_block(callread_pc):
+                        try:
+                            ancestors = ghidra_run_script(ghidra_port, "get_ancestor", [callread_pc])
+                            if isinstance(ancestors, (list, tuple)) and ancestors and ancestors[0] is not None:
+                                return hex(int(ancestors[0]))
+                        except Exception as e:
+                            logging.warning("[DT] pseudo get_ancestor failed callread=0x%x err=%s",
+                                            callread_pc, e)
+                        return '0x0'
+
                     while True:
                         if os.path.exists(pending):
                             try:
@@ -356,7 +582,6 @@ def configure_unicorn(args):
                                 if os.path.exists(json_f):
                                     with open(json_f, 'r') as _f:
                                         data = _json2.load(_f)
-                                    changed = False
                                     for key in ['irq_dt_set', 'main_dt_set']:
                                         for dt in data.get(key, []):
                                             if dt.get('avail_pc', '0x0') != '0x0':
@@ -365,25 +590,128 @@ def configure_unicorn(args):
                                             try:
                                                 cr = ghidra_run_script(ghidra_port, "correct_lr", [raw_lr])
                                             except Exception:
-                                                pass
+                                                cr = raw_lr
                                             rpc = int(dt['read_pc'], 16)
                                             ipc = int(dt['irq_pc'], 16) if dt.get('irq_pc', '0x0') != '0x0' else 0
                                             ba = int(dt['buffer_addr'], 16) if dt.get('buffer_addr', '0x0') != '0x0' else 0
                                             try:
+                                                indirect_map_path, _ = _merge_indirect_worker_maps()
                                                 res, _ = ghidra_run_script(ghidra_port, "global_static_data",
-                                                    [cr, rpc, entry, ipc, ba, ""])
-                                                dt['avail_pc'] = res[0].get('avail_pc', '0x0') if res else '0x0'
-                                                dt['callread_pc'] = hex(cr)
-                                                dt['consume_pc_set'] = res[0].get('consume_pc_set', []) if res else []
-                                                changed = True
+                                                    [cr, rpc, entry, ipc, ba, indirect_map_path])
+                                                with open(json_f, 'r') as _f:
+                                                    latest = _json2.load(_f)
+                                                latest_idx = _find_dt_index(latest, key, dt)
+                                                if latest_idx < 0:
+                                                    logging.info("[GHIDRA-DAEMON] skip stale result: dt removed key=%s dr=%s",
+                                                                 key, dt.get('dr', '0x0'))
+                                                    continue
+                                                latest_dt = latest[key][latest_idx]
+                                                if _has_avail(latest_dt):
+                                                    logging.info("[GHIDRA-DAEMON] skip stale result: dt already has avail key=%s dr=%s avail=%s",
+                                                                 key, latest_dt.get('dr', '0x0'), latest_dt.get('avail_pc', '0x0'))
+                                                    continue
+
+                                                if key == 'irq_dt_set' and (not res or not res[0].get('consume_pc_set')):
+                                                    blacklist = latest.setdefault('blacklist', [])
+                                                    callread_hex = _hex_or_zero(cr)
+                                                    if callread_hex not in blacklist:
+                                                        blacklist.append(callread_hex)
+                                                    pseudo_channels = latest.setdefault('pseudo_channels', [])
+                                                    pseudo_entry = {
+                                                        'callread_pc': callread_hex,
+                                                        'dr': _hex_or_zero(latest_dt.get('dr', dt.get('dr', '0x0'))),
+                                                        'read_pc': _hex_or_zero(latest_dt.get('read_pc', dt.get('read_pc', '0x0'))),
+                                                        'irq_pc': _hex_or_zero(latest_dt.get('irq_pc', dt.get('irq_pc', '0x0'))),
+                                                        'buffer_addr': _hex_or_zero(latest_dt.get('buffer_addr', dt.get('buffer_addr', '0x0'))),
+                                                        'escape_block': _get_escape_block(cr),
+                                                        'retry_count': 0,
+                                                    }
+                                                    updated = False
+                                                    for item in pseudo_channels:
+                                                        if (_same_hex(item.get('callread_pc', '0x0'), pseudo_entry['callread_pc']) and
+                                                                _same_hex(item.get('dr', '0x0'), pseudo_entry['dr'])):
+                                                            retry_count = _int_or_zero(item.get('retry_count', 0)) + 1
+                                                            item.update(pseudo_entry)
+                                                            item['retry_count'] = retry_count
+                                                            pseudo_entry['retry_count'] = retry_count
+                                                            updated = True
+                                                            break
+                                                    if not updated:
+                                                        pseudo_channels.append(pseudo_entry)
+                                                    old_created = latest.get('dt_created_dr', [])
+                                                    latest['dt_created_dr'] = [
+                                                        item for item in old_created
+                                                        if not _same_hex(item, pseudo_entry['dr'])
+                                                    ]
+                                                    removed_created = len(old_created) - len(latest['dt_created_dr'])
+                                                    latest[key].pop(latest_idx)
+                                                    with open(json_f, 'w') as _f:
+                                                        _json2.dump(latest, _f, indent=2)
+                                                    with open("/tmp/ghidra_done", 'w') as _f:
+                                                        pass
+                                                    logging.info("[DT] move irq pseudo channel to blacklist callread=%s dr=%s escape=%s retry=%d created_removed=%d",
+                                                                 callread_hex, pseudo_entry['dr'],
+                                                                 pseudo_entry['escape_block'],
+                                                                 pseudo_entry['retry_count'],
+                                                                 removed_created)
+                                                    continue
+
+                                                if key == 'main_dt_set' and (not res or not res[0].get('consume_pc_set')):
+                                                    callread_hex = _hex_or_zero(cr)
+                                                    dr_hex = _hex_or_zero(latest_dt.get('dr', dt.get('dr', '0x0')))
+                                                    read_pc_hex = _hex_or_zero(latest_dt.get('read_pc', dt.get('read_pc', '0x0')))
+                                                    failure_entry = _record_main_dt_failure(
+                                                        latest, dr_hex, read_pc_hex, callread_hex)
+                                                    old_created = latest.get('dt_created_dr', [])
+                                                    latest['dt_created_dr'] = [
+                                                        item for item in old_created
+                                                        if not _same_hex(item, dr_hex)
+                                                    ]
+                                                    removed_created = len(old_created) - len(latest['dt_created_dr'])
+                                                    latest[key].pop(latest_idx)
+                                                    with open(json_f, 'w') as _f:
+                                                        _json2.dump(latest, _f, indent=2)
+                                                    with open("/tmp/ghidra_done", 'w') as _f:
+                                                        pass
+                                                    logging.info("[DT] record main_dt failure callread=%s dr=%s read_pc=%s retry=%d created_removed=%d",
+                                                                 callread_hex, dr_hex, read_pc_hex,
+                                                                 failure_entry['retry_count'],
+                                                                 removed_created)
+                                                    continue
+
+                                                latest_dt['avail_pc'] = _hex_or_zero(res[0].get('avail_pc', '0x0')) if res else _hex_or_zero(cr)
+                                                latest_dt['callread_pc'] = _hex_or_zero(cr)
+                                                latest_dt['consume_pc_set'] = [
+                                                    _hex_or_zero(x) for x in res[0].get('consume_pc_set', [])
+                                                ] if res else []
+                                                dr_hex = _hex_or_zero(latest_dt.get('dr', dt.get('dr', '0x0')))
+                                                read_pc_hex = _hex_or_zero(latest_dt.get('read_pc', dt.get('read_pc', '0x0')))
+                                                removed_blacklist, removed_pseudo = _clear_resolved_pseudo(
+                                                    latest, dr_hex, latest_dt['callread_pc'])
+                                                if removed_blacklist or removed_pseudo:
+                                                    logging.info("[DT] clear resolved pseudo dr=%s callread=%s blacklist=%d pseudo=%d",
+                                                                 dr_hex, latest_dt['callread_pc'],
+                                                                 removed_blacklist, removed_pseudo)
+                                                if key == 'main_dt_set':
+                                                    removed_failures = _clear_main_dt_failure(
+                                                        latest, dr_hex, read_pc_hex, latest_dt['callread_pc'])
+                                                    if removed_failures:
+                                                        logging.info("[DT] clear resolved main_dt failure dr=%s read_pc=%s callread=%s failures=%d",
+                                                                     dr_hex, read_pc_hex,
+                                                                     latest_dt['callread_pc'],
+                                                                     removed_failures)
+                                                with open(json_f, 'w') as _f:
+                                                    _json2.dump(latest, _f, indent=2)
+                                                with open("/tmp/ghidra_done", 'w') as _f:
+                                                    pass
+                                                logging.info("[GHIDRA-DAEMON] patched %s key=%s dr=%s",
+                                                             json_f, key, latest_dt.get('dr', '0x0'))
+
+                                                dt['avail_pc'] = latest_dt['avail_pc']
+                                                dt['callread_pc'] = latest_dt['callread_pc']
+                                                dt['consume_pc_set'] = latest_dt['consume_pc_set']
                                             except Exception as e:
                                                 logging.error("[GHIDRA-DAEMON] failed: %s", e)
-                                    if changed:
-                                        with open(json_f, 'w') as _f:
-                                            _json2.dump(data, _f, indent=2)
-                                        with open("/tmp/ghidra_done", 'w') as _f:
-                                            pass
-                                        logging.info("[GHIDRA-DAEMON] patched %s", json_f)
                             except Exception as e:
                                 logging.error("[GHIDRA-DAEMON] error: %s", e)
                         _time.sleep(2)
