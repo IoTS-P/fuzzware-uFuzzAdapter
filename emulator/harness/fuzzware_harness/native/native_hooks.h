@@ -142,7 +142,8 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
                                    uint32_t irq_pc, uint32_t avail_pc,
                                    uint32_t rx_head, uint32_t rx_tail,
                                    short buffer_len, short buffer_min_len,
-                                   short consume_count, uint32_t vtor);
+                                   short consume_count, short irq_num,
+                                   uint32_t vtor);
 uc_err main_proc_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                                     void *user_data);
 uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,

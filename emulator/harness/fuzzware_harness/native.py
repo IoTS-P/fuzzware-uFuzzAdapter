@@ -445,7 +445,7 @@ def init(uc, mmio_regions, exit_at_bbls, exit_at_hit_num, do_print_exit_info, fu
                             # short buffer_len, short buffer_min_len,
                             # short consume_count);
     _setup_prototype(native_lib, "fill_data_tracker_main_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short)
-    _setup_prototype(native_lib, "fill_data_tracker_irq_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short,ctypes.c_uint32)
+    _setup_prototype(native_lib, "fill_data_tracker_irq_dt_array", ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_uint32,ctypes.c_short,ctypes.c_short,ctypes.c_short,ctypes.c_short,ctypes.c_uint32)
     #ufuzz_adapter_add_avail_hook(uc_engine *uc)
     _setup_prototype(native_lib, "ufuzz_adapter_add_avail_hook", ctypes.c_int, uc_engine)
     # Channel discovery

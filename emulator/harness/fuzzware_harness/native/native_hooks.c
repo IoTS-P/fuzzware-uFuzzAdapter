@@ -1071,13 +1071,6 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
   printf("[NATIVE FUZZ] Requiring %d fuzz bytes\n", size);
   fflush(stdout);
 #endif
-// #ifdef MYDEBUG
-// char mybuf[100];
-// uint32_t myipsr = 0;
-// uc_reg_read(uc, UC_ARM_REG_IPSR, &myipsr);
-// sprintf(mybuf, "myipsr = %x\n", myipsr);
-// my_debug_log(mybuf);
-// #endif
 
   // Deal with copying over the (remaining) fuzzing bytes
   if (size && fuzz_cursor + size <= fuzz_size) {
@@ -1121,8 +1114,8 @@ bool get_fuzz(uc_engine *uc, uint8_t *buf, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
       do_exit(uc, UC_ERR_OK);
     }
-    // printf("get_fuzz called do_exit\n");
-    // do_exit(uc, UC_ERR_OK);
+    printf("get_fuzz called do_exit\n");
+    do_exit(uc, UC_ERR_OK);
     return 1;
   }
 }
@@ -1168,17 +1161,17 @@ uint8_t *get_fuzz_ptr(uc_engine *uc, uint32_t size) {
       puts("\n>>> Ran out of fuzz\n");
       fflush(stdout);
     }
-    my_debug_log("do_exit:ran out of fuzz\n");
-    fuzz_cursor = 0;
-    if (size && fuzz_cursor + size <= fuzz_size) {
-      uint8_t *res = &fuzz[fuzz_cursor];
-      fuzz_cursor += size;
+    // my_debug_log("do_exit:ran out of fuzz\n");
+    // fuzz_cursor = 0;
+    // if (size && fuzz_cursor + size <= fuzz_size) {
+    //   uint8_t *res = &fuzz[fuzz_cursor];
+    //   fuzz_cursor += size;
 
-      // We are consuming fuzzing input, reset watchdog
-      reload_timer(fuzz_consumption_timer_id);
+    //   // We are consuming fuzzing input, reset watchdog
+    //   reload_timer(fuzz_consumption_timer_id);
 
-      return res;
-    }
+    //   return res;
+    // }
     printf("get_fuzz_ptr called do_exit\n");
     do_exit(uc, UC_ERR_OK);
     return NULL;
@@ -2315,7 +2308,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
                                    uint32_t irq_pc, uint32_t avail_pc,
                                    uint32_t rx_head, uint32_t rx_tail,
                                    short buffer_len, short buffer_min_len,
-                                   short consume_count, uint32_t vtor) {
+                                   short consume_count, short irq_num, uint32_t vtor) {
 
   irq_dt_array[irq_dt_array_index].dr = dr;
   irq_dt_array[irq_dt_array_index].callread_pc = callread_pc;
@@ -2327,7 +2320,7 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   irq_dt_array[irq_dt_array_index].rx_tail = rx_tail;
   irq_dt_array[irq_dt_array_index].buffer_len = buffer_len;
   irq_dt_array[irq_dt_array_index].buffer_min_len = buffer_min_len;
-  irq_dt_array[irq_dt_array_index].irq_num = 0;
+  irq_dt_array[irq_dt_array_index].irq_num = irq_num;
   irq_dt_array[irq_dt_array_index].fifo_head = 0;
   irq_dt_array[irq_dt_array_index].fifo_tail = 0;
   irq_dt_array[irq_dt_array_index].interrupt_times = 0;
@@ -2346,12 +2339,17 @@ int fill_data_tracker_irq_dt_array(uint32_t dr, uint32_t callread_pc,
   return 0;
 }
 
+static bool irq_num_is_valid(short irq_num) {
+  return irq_num > 0 && irq_num < NVIC_NUM_SUPPORTED_INTERRUPTS;
+}
+
 static bool irq_dt_is_complete_for_delivery(DataTracker *dt) {
   return dt &&
          dt->avail_pc != 0 &&
          dt->buffer_len > 1 &&
          dt->buffer_min_len > 0 &&
-         dt->buffer_min_len <= dt->buffer_len;
+         dt->buffer_min_len <= dt->buffer_len &&
+         irq_num_is_valid(dt->irq_num);
 }
 
 static int add_avail_dispatch_entry(uint32_t pc, DataTracker *dt, bool is_main) {
@@ -2422,24 +2420,24 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data) {
   my_debug_log("irq_avail_hook_handler\n");
   DataTracker *dt = (DataTracker *)user_data;
-
-  // ---- 解析 IRQ 号 ----
-  if (dt->irq_pc < 256) {
-    dt->irq_num = dt->irq_pc;
-  } else if (dt->irq_pc == 256) {
+  if (!dt) {
     return UC_ERR_OK;
-  } else {
-    // 每次重新查询，避免 NVIC 未启用时缓存
-    int resolved = get_match_irq_num(uc, dt->irq_pc);
-    if (resolved < 0) {
-      return UC_ERR_OK;  // 中断尚未启用 / 未匹配，等下次
-    }
-    dt->irq_num = (short)resolved;
+  }
+  bool fill_only = dt->irq_num == 157;
+
+  // IRQ DT stores raw IPSR captured when the DR hook fired.
+  if (!irq_num_is_valid(dt->irq_num)) {
+    delivery_log("IRQ_SKIP dr=0x%x reason=invalid_irq_num irq_num=%d",
+                 dt->dr, dt->irq_num);
+    return UC_ERR_OK;
   }
 
   // ---- FIFO 空则装填 ----
   if (!dt->interrupt_times) {
     if (g_delivery_budget_closed) {
+      return UC_ERR_OK;
+    }
+    if (fill_only && dt->fifo_head != dt->fifo_tail) {
       return UC_ERR_OK;
     }
 
@@ -2456,11 +2454,24 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
     if (delivery_LenFI < 0) delivery_LenFI = 0;
     delivery_LenR  = delivery_LenR - delivery_X;
     if (delivery_LenR == 0) delivery_X = 0;
+    if (fill_only) {
+      delivery_log("COMMIT_FILL_ONLY dr=0x%x irq=%d plan=%d LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
+                   dt->dr, dt->irq_num, len_si,
+                   delivery_LenFI, delivery_LenR, delivery_X,
+                   fuzz_cursor, fuzz_size);
+      return UC_ERR_OK;
+    }
     dt->interrupt_times = len_si;
     delivery_log("COMMIT dr=0x%x plan=%d irq_times=%d LenFI=%d LenR=%u X=%u cursor=%ld fuzz_size=%ld",
                  dt->dr, len_si, dt->interrupt_times,
                  delivery_LenFI, delivery_LenR, delivery_X,
                  fuzz_cursor, fuzz_size);
+    return UC_ERR_OK;
+  }
+
+  if (fill_only) {
+    delivery_log("FILL_ONLY_SKIP_IRQ dr=0x%x irq=%d irq_times=%d",
+               dt->dr, dt->irq_num, dt->interrupt_times);
     return UC_ERR_OK;
   }
 
@@ -2728,51 +2739,6 @@ static void debug_log_target_irq_pc(uc_engine *uc, const char *reason) {
                   (unsigned long long)g_code_hook_begin);
 }
 
-static int get_irq_num_from_vector_table(uc_engine *uc, uint32_t irq_pc) {
-  if (irq_pc == 0) return 0;
-
-  uint32_t mem_vtor = 0;
-  uc_mem_read(uc, SYSCTL_VTOR, &mem_vtor, sizeof(mem_vtor));
-
-  uint32_t vtor_candidates[3] = {
-      vtor_num,
-      mem_vtor,
-      (uint32_t)g_code_hook_begin,
-  };
-
-  uint32_t target = irq_pc & ~1u;
-  for (int c = 0; c < 3; c++) {
-    uint32_t vtor = vtor_candidates[c];
-    if (vtor == 0xffffffff) {
-      continue;
-    }
-
-    for (int irq_num = EXCEPTION_NO_EXTERNAL_START;
-         irq_num < NVIC_NUM_SUPPORTED_INTERRUPTS; irq_num++) {
-      uint32_t handler_val = 0;
-      uint64_t handler_addr = (uint64_t)vtor + ((uint64_t)irq_num * 4);
-      if (uc_mem_read(uc, handler_addr, &handler_val,
-                      sizeof(handler_val)) != UC_ERR_OK) {
-        continue;
-      }
-      if (handler_val == 0 || handler_val == 0xffffffff) continue;
-
-      uint32_t handler_pc = handler_val & ~1u;
-      if (handler_pc < g_code_hook_begin || handler_pc > g_code_hook_end) {
-        continue;
-      }
-
-      int diff = abs((int)handler_pc - (int)target);
-      if (diff <= 4) {
-        vtor_num = vtor;
-        return irq_num;
-      }
-    }
-  }
-
-  return 0;
-}
-
 // Returns the matching IRQ number, or 0 if no enabled IRQ matches irq_pc.
 int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
   int num_enabled = get_num_enabled();
@@ -2799,30 +2765,6 @@ int get_match_irq_num(uc_engine *uc, uint32_t irq_pc) {
     }
   }
   // printf("[GET_IRQ] no exact match, best irq=%d diff=%d\n", best_irq, best_diff);
-  return 0;
-}
-
-static int resolve_irq_num_for_pc(uc_engine *uc, uint32_t irq_pc,
-                                  const char **source) {
-  if (source) *source = "none";
-  if (irq_pc == 0 || irq_pc == 256) return 0;
-  if (irq_pc < 256) {
-    if (source) *source = "direct";
-    return (int)irq_pc;
-  }
-
-  int resolved = get_irq_num_from_vector_table(uc, irq_pc);
-  if (resolved > 0) {
-    if (source) *source = "vector";
-    return resolved;
-  }
-
-  resolved = get_match_irq_num(uc, irq_pc);
-  if (resolved > 0) {
-    if (source) *source = "enabled";
-    return resolved;
-  }
-
   return 0;
 }
 
@@ -3137,6 +3079,7 @@ static bool dr_has_complete_irq_dt(uint32_t dr) {
         dt->buffer_addr != 0 &&
         dt->read_pc != 0 &&
         dt->irq_pc != 0 &&
+        irq_num_is_valid(dt->irq_num) &&
         dt->avail_pc != 0 &&
         dt->consume_pcs[0] != 0) {
       return true;
@@ -3327,14 +3270,15 @@ void json_reload_dt_arrays(uc_engine *uc) {
         short buffer_len     = (short)json_extract_int(obj_start, "buffer_len");
         short buffer_min_len = (short)json_extract_int(obj_start, "buffer_min_len");
         int consume_count    = (int)json_extract_int(obj_start, "consume_count");
+        short irq_num        = (short)json_extract_int(obj_start, "irq_num");
 
-        printf("[JSON_RELOAD] irq_dt: dr=0x%x irq_pc=0x%x buf=0x%x avail=0x%x\n",
-               dr, irq_pc, buffer_addr, avail_pc);
+        printf("[JSON_RELOAD] irq_dt: dr=0x%x irq_pc=0x%x irq_num=%d buf=0x%x avail=0x%x\n",
+               dr, irq_pc, irq_num, buffer_addr, avail_pc);
 
         fill_data_tracker_irq_dt_array(dr, callread_pc, read_pc, buffer_addr,
                                        irq_pc, avail_pc, rx_head, rx_tail,
                                        buffer_len, buffer_min_len, consume_count,
-                                       vtor_num);
+                                       irq_num, vtor_num);
         // Extract per-DT consume_pc_set
         {
           const char *cp = strstr(obj_start, "\"consume_pc_set\":");
@@ -3548,13 +3492,13 @@ static int write_full_json(void) {
     int consume_count = count_consume_pcs(consume_pcs);
     fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
             "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
-            "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
+            "\"irq_pc\": \"0x%x\", \"irq_num\": %d, \"avail_pc\": \"0x%x\", "
             "\"rx_head\": %u, \"rx_tail\": %u, "
             "\"buffer_len\": %d, \"buffer_min_len\": %d, "
             "\"consume_count\": %d, "
             "\"consume_pc_set\": %s}%s\n",
             dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
-            dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
+            dt->irq_pc, dt->irq_num, dt->avail_pc, dt->rx_head, dt->rx_tail,
             dt->buffer_len, dt->buffer_min_len, consume_count,
             consume_pcs,
             (i < irq_dt_array_index - 1) ? "," : "");
@@ -3569,13 +3513,13 @@ static int write_full_json(void) {
     int consume_count = count_consume_pcs(consume_pcs);
     fprintf(fp, "    {\"dr\": \"0x%x\", \"callread_pc\": \"0x%x\", "
             "\"read_pc\": \"0x%x\", \"buffer_addr\": \"0x%x\", "
-            "\"irq_pc\": \"0x%x\", \"avail_pc\": \"0x%x\", "
+            "\"irq_pc\": \"0x%x\", \"irq_num\": %d, \"avail_pc\": \"0x%x\", "
             "\"rx_head\": %u, \"rx_tail\": %u, "
             "\"buffer_len\": %d, \"buffer_min_len\": %d, "
             "\"consume_count\": %d, "
             "\"consume_pc_set\": %s}%s\n",
             dt->dr, dt->callread_pc, dt->read_pc, dt->buffer_addr,
-            dt->irq_pc, dt->avail_pc, dt->rx_head, dt->rx_tail,
+            dt->irq_pc, 0, dt->avail_pc, dt->rx_head, dt->rx_tail,
             dt->buffer_len, dt->buffer_min_len, consume_count,
             consume_pcs,
             (i < main_dt_array_index - 1) ? "," : "");
@@ -3841,6 +3785,7 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     dt->callread_pc = lr;  // raw LR, corrected by Ghidra correct_lr later
     dt->irq_pc = 0;
     dt->buffer_addr = 0;
+    dt->irq_num = 0;
     dt->avail_pc = 0;  // deferred to static analysis
 
     // Insert into hash table
@@ -4332,18 +4277,10 @@ static void hook_bounds_avail(uc_engine *uc, uint64_t address, uint32_t size,
                     dt->avail_pc, dt->dr, BOUNDS_FIFO_SIZE);
   }
 
-  if (g_bounds_irq <= 0) {
-    const char *irq_source = NULL;
-    g_bounds_irq = resolve_irq_num_for_pc(uc, dt->irq_pc, &irq_source);
-    if (g_bounds_irq > 0) {
-      dt->irq_num = (short)g_bounds_irq;
-      dt_learning_log("[BOUNDS] IRQ_FILTER_ADD_AVAIL source=%s dr=0x%x irq_pc=0x%x irq=%d",
-                      irq_source, dt->dr, dt->irq_pc, g_bounds_irq);
-    } else {
-      dt_learning_log("[BOUNDS] IRQ_UNRESOLVED dr=0x%x irq_pc=0x%x",
-                      dt->dr, dt->irq_pc);
-      return;
-    }
+  if (!irq_num_is_valid((short)g_bounds_irq)) {
+    dt_learning_log("[BOUNDS] IRQ_UNRESOLVED dr=0x%x irq_pc=0x%x irq_num=%d",
+                    dt->dr, dt->irq_pc, dt->irq_num);
+    return;
   }
 
   if (g_bounds_irq_pend_count >= BOUNDS_MAX_IRQ_PENDS) {
@@ -4477,6 +4414,7 @@ static bool start_bounds_learning_if_needed(uc_engine *uc) {
     DataTracker *dt = &irq_dt_array[i];
     if (!dt->avail_pc) continue;
     if (!dt->buffer_addr) continue;
+    if (!irq_num_is_valid(dt->irq_num)) continue;
     if (!dt->consume_pcs[0]) continue;
     if (dt->buffer_len > 1 && dt->buffer_min_len > 0) continue;
     target_idx = i;
@@ -4497,7 +4435,7 @@ static bool start_bounds_learning_if_needed(uc_engine *uc) {
   g_bounds_state = 1;
   g_bounds_dt_idx = target_idx;
   g_bounds_dt_dr = dt->dr;
-  g_bounds_irq = 0;
+  g_bounds_irq = dt->irq_num;
   g_bounds_avail_hit = false;
   g_bounds_avail_pass_next = false;
   g_bounds_fifo_seeded = false;
@@ -4635,6 +4573,7 @@ static void finalize_discovery(uc_engine *uc) {
   memset(dt, 0, sizeof(DataTracker));
   dt->dr = dr;
   dt->irq_pc = g_discovery_irq_pc;
+  dt->irq_num = (short)g_discovery_irq_ipsr;
   dt->buffer_addr = g_discovery_buffer_addr;
   dt->read_pc = g_discovery_read_pc;
   dt->callread_pc = g_discovery_callread_pc;
@@ -4645,8 +4584,8 @@ static void finalize_discovery(uc_engine *uc) {
   dt->rx_head = 0;
   dt->rx_tail = 0;
 
-  dt_learning_log("[DISCOVERY] IRQ_DT_PENDING dr=0x%x irq_pc=0x%x buf=0x%x read_pc=0x%x callread_pc=0x%x",
-                  dt->dr, dt->irq_pc, dt->buffer_addr,
+  dt_learning_log("[DISCOVERY] IRQ_DT_PENDING dr=0x%x irq_pc=0x%x irq_num=%d buf=0x%x read_pc=0x%x callread_pc=0x%x",
+                  dt->dr, dt->irq_pc, dt->irq_num, dt->buffer_addr,
                   dt->read_pc, dt->callread_pc);
 
   // Update hash table (replace placeholder)
@@ -4670,8 +4609,8 @@ static void finalize_discovery(uc_engine *uc) {
 
   g_discovery_occurred = true;
 
-  dt_learning_log("[DISCOVERY] COMPLETE_PENDING dr=0x%x irq_pc=0x%x buf=0x%x read_pc=0x%x callread_pc=0x%x",
-                  dr, g_discovery_irq_pc, g_discovery_buffer_addr,
+  dt_learning_log("[DISCOVERY] COMPLETE_PENDING dr=0x%x irq_pc=0x%x irq_num=%d buf=0x%x read_pc=0x%x callread_pc=0x%x",
+                  dr, g_discovery_irq_pc, g_discovery_irq_ipsr, g_discovery_buffer_addr,
                   g_discovery_read_pc, g_discovery_callread_pc);
 
   do_exit(uc, UC_ERR_OK);

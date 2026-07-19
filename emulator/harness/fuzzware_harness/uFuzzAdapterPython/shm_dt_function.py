@@ -105,6 +105,7 @@ def convert_to_ctypes(dt_object):
     dt.rx_tail = dt_object.get('rx_tail', 0)
     dt.buffer_len = dt_object.get('buffer_len', 0)
     dt.buffer_min_len = dt_object.get('buffer_min_len', 0)
+    dt.irq_num = dt_object.get('irq_num', 0)
     dt.consume_count = dt_object.get('consume_count', 0)
     return dt
 
@@ -121,7 +122,7 @@ def fill_global_datatracker_array(c_lib,main_dt_set,irq_dt_set,vtor):
             my_debug_log("fill_data_tracker_array success")
     for i, get_dt in enumerate(irq_dt_set):
         dt = convert_to_ctypes(get_dt)
-        res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count,vtor)
+        res = c_lib.fill_data_tracker_irq_dt_array(dt.dr,dt.callread_pc,dt.read_pc,dt.buffer_addr,dt.irq_pc,dt.avail_pc,dt.rx_head,dt.rx_tail,dt.buffer_len,dt.buffer_min_len,dt.consume_count,dt.irq_num,vtor)
         if res != 0:
             my_debug_log("fill_data_tracker_array error")
             return

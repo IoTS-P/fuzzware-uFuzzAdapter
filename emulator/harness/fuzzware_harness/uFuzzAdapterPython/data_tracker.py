@@ -8,6 +8,7 @@ class DataTracker:
         self.buffer_addr = None # the address reflected by the dr
         self.consume_pc_set = None # the set of the pc that consume the dr data
         self.irq_pc = None # the pc of the irq handler
+        self.irq_num = 0 # raw IPSR captured when IRQ-context DR hook fires
         self.avail_pc = None # the pc to check the avail of the rx buffer (calculated by the irq handler or read_pc)
         # pointer to the rx buffer
         self.rx_head = None
@@ -25,6 +26,7 @@ class DataTracker:
             self.read_pc == other.read_pc and
             self.buffer_addr == other.buffer_addr and
             self.irq_pc == other.irq_pc and
+            self.irq_num == other.irq_num and
             self.avail_pc == other.avail_pc and
             self.rx_head == other.rx_head and
             self.rx_tail == other.rx_tail and
@@ -40,6 +42,7 @@ class DataTracker:
             self.read_pc,
             self.buffer_addr,
             self.irq_pc,
+            self.irq_num,
             self.avail_pc,
             self.rx_head,
             self.rx_tail,

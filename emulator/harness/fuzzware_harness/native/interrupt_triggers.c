@@ -76,7 +76,7 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
                         }
                     }
                     trigger->irq = nth_enabled_irq_num(irq_ind);
-                    if (trigger->irq == 48) trigger->irq = 0;
+                    // if (trigger->irq == 48) trigger->irq = 0;
 
                     #ifdef DEBUG_INTERRUPT_TRIGGERS
                     printf("[INTERRUPT TRIGGER] Fuzzer index choice: Pending nth (%d) interrupt: %d\n", irq_ind, trigger->irq);
@@ -96,7 +96,7 @@ static void interrupt_trigger_tick_block_hook(uc_engine *uc, uint64_t address, u
                     if (is_irq_managed_by_dt(trigger->irq)) {
                         trigger->irq = 0;
                     }
-                    if (trigger->irq == 48) trigger->irq = 0;
+                    // if (trigger->irq == 48) trigger->irq = 0;
                     
                     #ifdef DEBUG_INTERRUPT_TRIGGERS
                     printf("[INTERRUPT TRIGGER] Round robin: Pending nth (%d) interrupt: %d\n", trigger->round_robin_index, trigger->irq);
