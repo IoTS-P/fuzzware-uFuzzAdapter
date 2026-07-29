@@ -36,6 +36,8 @@ target (uc_mem_write)
 #include <stdlib.h>
 #include <time.h>
 #include <stdarg.h>
+#include <ctype.h>
+#include <stddef.h>
 
 // 0. Constants
 // ~10 MB of preallocated fuzzing buffer size
@@ -156,9 +158,39 @@ bool adapter_can_exit = false;
 KHASH_MAP_INIT_INT(dr_dt, DataTracker *)
 khash_t(dr_dt) *hash_table = NULL;
 
+#define DISCOVERY_READ_TOKEN_MAX 32
+#define MAX_DISCOVERY_CANDIDATES 64
+#define DISCOVERY_ADDR_MERGE_GAP 4
+#define DISCOVERY_TOKEN_MAX_AGE 4
+
+typedef struct {
+  uint32_t value;
+  uint32_t read_pc;
+  uint32_t callread_pc;
+  uint32_t ipsr;
+  uint32_t order;
+  bool matched;
+} DiscoveryReadToken;
+
+typedef struct {
+  uint32_t start;
+  uint32_t end;
+  uint32_t source_read_pc;
+  uint32_t source_callread_pc;
+  uint32_t source_ipsr;
+  uint32_t first_order;
+  uint32_t last_order;
+  uint32_t write_count;
+  bool seen_irq_read;
+  bool seen_main_read;
+  uint32_t main_read_pc;
+  uint32_t main_callread_pc;
+} DiscoveryCandidate;
+
 // Channel discovery globals
 DataTracker *pending_dt_array = NULL;
 short pending_dt_array_index = 0;
+
 
 uint32_t g_all_dr_addrs[MAX_DR_ADDRS] = {0};
 int g_num_dr_addrs = 0;
@@ -183,8 +215,14 @@ uint32_t g_discovery_read_pc = 0;
 uint32_t g_discovery_callread_pc = 0;
 uc_hook g_discovery_buffer_read_hook = 0;
 bool g_read_pc_done = false;
+uc_hook g_discovery_candidate_read_hook = 0;
 static bool g_dt_callstack_early_requested = false;
 static bool g_dt_callstack_early_active = false;
+static DiscoveryReadToken g_discovery_read_tokens[DISCOVERY_READ_TOKEN_MAX] = {0};
+static int g_num_discovery_read_tokens = 0;
+static DiscoveryCandidate g_discovery_candidates[MAX_DISCOVERY_CANDIDATES] = {0};
+static int g_num_discovery_candidates = 0;
+static uint32_t g_discovery_order = 0;
 
 
 // Post-static-analysis bound learning state:
@@ -332,6 +370,8 @@ static void dispatch_indirect_call(uc_engine *uc, uint32_t pc);
 static void dispatch_pseudo_callread(uc_engine *uc, uint32_t pc);
 static void dt_callstack_on_code(uc_engine *uc, uint32_t pc);
 static void dt_callstack_reset(void);
+static bool discovery_multi_candidate_enabled(void);
+static bool discovery_seed_enabled(void);
 static uint32_t resolve_callread_pc_for_read(uc_engine *uc, uint32_t read_pc,
     uint32_t ipsr, const char *reason);
 static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
@@ -470,7 +510,8 @@ static bool dt_callstack_enabled(void) {
   return g_num_function_entries > 0 &&
          (g_dt_callstack_early_active ||
           g_in_discovery_mode ||
-          g_discovery_buffer_read_hook != 0);
+          g_discovery_buffer_read_hook != 0 ||
+          g_discovery_candidate_read_hook != 0);
 }
 
 static bool thumb_pc_is_link_call(uc_engine *uc, uint32_t pc,
@@ -1098,6 +1139,13 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data);
 void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data);
+void hook_discovery_candidate_read(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data);
+static void discovery_reset_candidates(void);
+static void discovery_note_dr_read(uc_engine *uc, uint32_t dr, uint32_t pc,
+    uint32_t ipsr, int size, int64_t value);
+static void seed_pending_discovery_fifo(DataTracker *dt, uint32_t dr,
+    bool should_log);
 
 static void determine_input_mode() {
   char *id_str;
@@ -1141,6 +1189,11 @@ void do_exit(uc_engine *uc, uc_err err) {
       uc_hook_del(uc, g_discovery_buffer_read_hook);
       g_discovery_buffer_read_hook = 0;
     }
+    if (g_discovery_candidate_read_hook) {
+      uc_hook_del(uc, g_discovery_candidate_read_hook);
+      g_discovery_candidate_read_hook = 0;
+    }
+    discovery_reset_candidates();
     g_in_discovery_mode = false;
   }
 
@@ -3040,9 +3093,10 @@ void reset_datatrcker_and_global_vars() {
   }
   // Refill pending DT FIFOs each round (snapshot restore doesn't touch C heap)
   for (int i = 0; i < pending_dt_array_index; i++) {
-    memset(pending_dt_array[i].fifo, 0xAA, 1);
-    pending_dt_array[i].fifo_head = 1;
-    pending_dt_array[i].fifo_tail = 0;
+    if (pending_dt_array[i].dr != 0) {
+      seed_pending_discovery_fifo(&pending_dt_array[i],
+                                  pending_dt_array[i].dr, false);
+    }
   }
 }
 
@@ -3104,6 +3158,11 @@ void cleanup_avail_and_pending_hooks(uc_engine *uc) {
     uc_hook_del(uc, g_discovery_buffer_read_hook);
     g_discovery_buffer_read_hook = 0;
   }
+  if (g_discovery_candidate_read_hook) {
+    uc_hook_del(uc, g_discovery_candidate_read_hook);
+    g_discovery_candidate_read_hook = 0;
+  }
+  discovery_reset_candidates();
   g_in_discovery_mode = false;
   g_discovery_irq_ipsr = 0;
   g_discovery_cross_irq_skip_count = 0;
@@ -3159,7 +3218,9 @@ void reset_all_tracker_state(void) {
   g_discovery_read_pc = 0;
   g_discovery_callread_pc = 0;
   g_discovery_buffer_read_hook = 0;
+  g_discovery_candidate_read_hook = 0;
   g_read_pc_done = false;
+  discovery_reset_candidates();
 
   dt_callstack_reset();
   dt_learning_log("[CALLSTACK] RESET reason=tracker_reset early=%d",
@@ -3699,10 +3760,9 @@ void rebuild_pending_drs(uc_engine *uc) {
     memset(dt, 0, sizeof(DataTracker));
     dt->dr = dr;
 
-    // Fill FIFO with magic token 0xAA as initial taint
-    memset(dt->fifo, 0xAA, 1);
-    dt->fifo_head = 1;
-    dt->fifo_tail = 0;
+    // Fill FIFO with a discovery seed when provided; otherwise preserve the
+    // old one-byte 0xaa fallback.
+    seed_pending_discovery_fifo(dt, dr, true);
 
     // Insert into hash table
     int ret = 0;
@@ -3962,6 +4022,294 @@ void set_ghidra_callback(void *cb) {
   g_ghidra_callback = cb;
 }
 
+static bool discovery_multi_candidate_enabled(void) {
+  const char *v = getenv("UFUZZ_DISCOVERY_MULTI_CANDIDATE");
+  return v && v[0] == '1';
+}
+
+static bool discovery_seed_enabled(void) {
+  const char *v = getenv("UFUZZ_DISCOVERY_ENABLE_SEED");
+  return v && v[0] == '1';
+}
+
+static void discovery_reset_candidates(void) {
+  memset(g_discovery_read_tokens, 0, sizeof(g_discovery_read_tokens));
+  g_num_discovery_read_tokens = 0;
+  memset(g_discovery_candidates, 0, sizeof(g_discovery_candidates));
+  g_num_discovery_candidates = 0;
+  g_discovery_order = 0;
+}
+
+static int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static size_t parse_hex_seed(const char *text, uint8_t *out, size_t cap) {
+  if (!text || !out || cap == 0) return 0;
+
+  size_t len = 0;
+  int high = -1;
+  for (const char *p = text; *p && len < cap; p++) {
+    if (*p == '0' && (p[1] == 'x' || p[1] == 'X') && high < 0) {
+      p++;
+      continue;
+    }
+    if (isspace((unsigned char)*p) || *p == ':' || *p == ',' ||
+        *p == '_' || *p == '-') {
+      continue;
+    }
+
+    int n = hex_nibble(*p);
+    if (n < 0) {
+      dt_learning_log("[DISCOVERY] SEED_PARSE_SKIP char=0x%x", (unsigned)*p);
+      continue;
+    }
+
+    if (high < 0) {
+      high = n;
+    } else {
+      out[len++] = (uint8_t)((high << 4) | n);
+      high = -1;
+    }
+  }
+
+  if (high >= 0) {
+    dt_learning_log("[DISCOVERY] SEED_PARSE_ODD_NIBBLE ignored=0x%x", high);
+  }
+  return len;
+}
+
+static size_t load_discovery_seed_for_dr(uint32_t dr, uint8_t *out,
+                                         size_t cap, const char **source) {
+  char env_name[64];
+  snprintf(env_name, sizeof(env_name), "UFUZZ_DISCOVERY_SEED_%08X", dr);
+  const char *text = getenv(env_name);
+  if (text && text[0]) {
+    size_t len = parse_hex_seed(text, out, cap);
+    if (len > 0) {
+      if (source) *source = env_name;
+      return len;
+    }
+  }
+
+  text = getenv("UFUZZ_DISCOVERY_SEED");
+  if (text && text[0]) {
+    size_t len = parse_hex_seed(text, out, cap);
+    if (len > 0) {
+      if (source) *source = "UFUZZ_DISCOVERY_SEED";
+      return len;
+    }
+  }
+
+  const char *use_fuzz = getenv("UFUZZ_DISCOVERY_USE_FUZZ_SEED");
+  if (use_fuzz && use_fuzz[0] == '1' && fuzz && fuzz_size > 0) {
+    size_t len = (size_t)fuzz_size;
+    if (len > cap) len = cap;
+    memcpy(out, fuzz, len);
+    if (source) *source = "fuzz";
+    return len;
+  }
+
+  if (source) *source = "fallback_0xaa";
+  return 0;
+}
+
+static void seed_pending_discovery_fifo(DataTracker *dt, uint32_t dr,
+                                        bool should_log) {
+  if (!dt) return;
+
+  const char *source = "fallback_0xaa";
+  size_t len = 0;
+
+  if (discovery_multi_candidate_enabled() && discovery_seed_enabled()) {
+    len = load_discovery_seed_for_dr(dr, dt->fifo, sizeof(dt->fifo),
+                                     &source);
+  }
+
+  if (len == 0) {
+    dt->fifo[0] = 0xaa;
+    len = 1;
+    source = "fallback_0xaa";
+  }
+
+  dt->fifo_tail = 0;
+  dt->fifo_head = (short)len;
+  if (should_log) {
+    dt_learning_log("[DISCOVERY] SEED_FIFO dr=0x%x source=%s len=%zu first=0x%x",
+                    dr, source ? source : "unknown", len, dt->fifo[0]);
+  }
+}
+
+static void discovery_ensure_candidate_read_hook(uc_engine *uc) {
+  if (!discovery_multi_candidate_enabled()) return;
+  if (g_discovery_candidate_read_hook != 0) return;
+
+  uc_err err = uc_hook_add(uc, &g_discovery_candidate_read_hook,
+                           UC_HOOK_MEM_READ_AFTER,
+                           hook_discovery_candidate_read, NULL,
+                           0, 0xFFFFFFFF);
+  if (err == UC_ERR_OK) {
+    dt_learning_log("[DISCOVERY] CAND_READ_HOOK installed");
+  } else {
+    dt_learning_log("[DISCOVERY] CAND_READ_HOOK_FAIL err=%d", err);
+  }
+}
+
+static DiscoveryReadToken *discovery_recent_unmatched_token(uint32_t ipsr,
+                                                            uint32_t value) {
+  uint32_t byte = value & 0xffu;
+  int count = g_num_discovery_read_tokens;
+  int max = count < DISCOVERY_READ_TOKEN_MAX ? count : DISCOVERY_READ_TOKEN_MAX;
+
+  for (int i = 0; i < max; i++) {
+    int idx = (g_num_discovery_read_tokens - 1 - i) %
+              DISCOVERY_READ_TOKEN_MAX;
+    DiscoveryReadToken *tok = &g_discovery_read_tokens[idx];
+    if (tok->matched || tok->ipsr != ipsr || tok->value != byte) {
+      continue;
+    }
+    if (g_discovery_order >= tok->order &&
+        g_discovery_order - tok->order > DISCOVERY_TOKEN_MAX_AGE) {
+      continue;
+    }
+    return tok;
+  }
+
+  return NULL;
+}
+
+static bool discovery_candidate_touches(DiscoveryCandidate *cand,
+                                        uint32_t addr, uint32_t size) {
+  uint32_t end = addr + (size ? (uint32_t)size - 1u : 0u);
+  return !(end + DISCOVERY_ADDR_MERGE_GAP < cand->start ||
+           addr > cand->end + DISCOVERY_ADDR_MERGE_GAP);
+}
+
+static DiscoveryCandidate *discovery_candidate_for_write(uint32_t addr,
+                                                         uint32_t size) {
+  for (int i = 0; i < g_num_discovery_candidates; i++) {
+    if (discovery_candidate_touches(&g_discovery_candidates[i], addr, size)) {
+      return &g_discovery_candidates[i];
+    }
+  }
+
+  if (g_num_discovery_candidates >= MAX_DISCOVERY_CANDIDATES) {
+    dt_learning_log("[DISCOVERY] CAND_DROP addr=0x%x reason=max_candidates", addr);
+    return NULL;
+  }
+
+  DiscoveryCandidate *cand =
+      &g_discovery_candidates[g_num_discovery_candidates++];
+  memset(cand, 0, sizeof(*cand));
+  cand->start = addr;
+  cand->end = addr + (size ? (uint32_t)size - 1u : 0u);
+  return cand;
+}
+
+static void discovery_note_candidate_write(uc_engine *uc, uint32_t addr,
+                                           int size,
+                                           DiscoveryReadToken *tok) {
+  if (!tok) return;
+
+  uint32_t pc = 0;
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  pc &= ~1u;
+
+  uint32_t write_size = size > 0 ? (uint32_t)size : 1u;
+  DiscoveryCandidate *cand = discovery_candidate_for_write(addr, write_size);
+  if (!cand) return;
+
+  uint32_t end = addr + write_size - 1u;
+  if (addr < cand->start) cand->start = addr;
+  if (end > cand->end) cand->end = end;
+
+  if (cand->write_count == 0) {
+    cand->first_order = tok->order;
+  }
+  cand->last_order = tok->order;
+  cand->source_read_pc = tok->read_pc;
+  cand->source_callread_pc = tok->callread_pc;
+  cand->source_ipsr = tok->ipsr;
+  cand->write_count++;
+
+  if (g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
+    g_discovery_addr_list[g_discovery_addr_count++] = addr;
+  }
+
+  ptrdiff_t idx = cand - g_discovery_candidates;
+  dt_learning_log("[DISCOVERY] CAND_WRITE idx=%td range=0x%x-0x%x "
+                  "addr=0x%x size=%d write_pc=0x%x src_read=0x%x "
+                  "src_callread=0x%x writes=%u",
+                  idx, cand->start, cand->end, addr, size, pc,
+                  cand->source_read_pc, cand->source_callread_pc,
+                  cand->write_count);
+
+  discovery_ensure_candidate_read_hook(uc);
+}
+
+static void discovery_note_dr_read(uc_engine *uc, uint32_t dr, uint32_t pc,
+                                   uint32_t ipsr, int size, int64_t value) {
+  (void)dr;
+  (void)size;
+
+  uint32_t callread_pc =
+      resolve_callread_pc_for_read(uc, pc, ipsr, "discovery_dr_read");
+
+  DiscoveryReadToken *tok =
+      &g_discovery_read_tokens[g_num_discovery_read_tokens %
+                               DISCOVERY_READ_TOKEN_MAX];
+  tok->value = (uint32_t)value & 0xffu;
+  tok->read_pc = pc;
+  tok->callread_pc = callread_pc;
+  tok->ipsr = ipsr;
+  tok->order = ++g_discovery_order;
+  tok->matched = false;
+
+  g_num_discovery_read_tokens++;
+
+  dt_learning_log("[DISCOVERY] DR_TOKEN dr=0x%x pc=0x%x callread=0x%x "
+                  "ipsr=0x%x val=0x%x order=%u",
+                  g_discovery_dr, pc, callread_pc, ipsr, tok->value,
+                  tok->order);
+}
+
+static DiscoveryCandidate *discovery_find_candidate_by_addr(uint32_t addr) {
+  for (int i = 0; i < g_num_discovery_candidates; i++) {
+    DiscoveryCandidate *cand = &g_discovery_candidates[i];
+    if (addr >= cand->start && addr <= cand->end) {
+      return cand;
+    }
+  }
+  return NULL;
+}
+
+static void discovery_select_candidate(uc_engine *uc,
+                                       DiscoveryCandidate *cand,
+                                       const char *reason) {
+  if (!cand || g_read_pc_done) return;
+
+  g_discovery_buffer_addr = cand->start;
+  g_discovery_read_pc = cand->main_read_pc;
+  g_discovery_callread_pc = cand->main_callread_pc;
+  g_read_pc_done = true;
+
+  if (g_discovery_candidate_read_hook) {
+    uc_hook_del(uc, g_discovery_candidate_read_hook);
+    g_discovery_candidate_read_hook = 0;
+  }
+
+  dt_learning_log("[DISCOVERY] CAND_SELECT reason=%s buf=0x%x "
+                  "range=0x%x-0x%x read_pc=0x%x callread=0x%x "
+                  "src_callread=0x%x writes=%u irq_reads=%d",
+                  reason ? reason : "unknown", cand->start, cand->start,
+                  cand->end, cand->main_read_pc, cand->main_callread_pc,
+                  cand->source_callread_pc, cand->write_count,
+                  cand->seen_irq_read ? 1 : 0);
+}
+
 static void signal_ghidra_pending(const char *reason, uint32_t dr) {
   if (!g_ghidra_callback) return;
   int fd = open("/tmp/ghidra_pending", O_CREAT | O_WRONLY | O_TRUNC, 0600);
@@ -3996,7 +4344,9 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     g_pseudo_dr_read_diag_count++;
   }
   if (g_in_discovery_mode) {
-    // Already in discovery, ignore further DR reads
+    if (discovery_multi_candidate_enabled() && dr == g_discovery_dr) {
+      discovery_note_dr_read(uc, dr, pc, ipsr, size, value);
+    }
     return;
   }
 
@@ -4054,6 +4404,10 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     g_in_discovery_mode = true;
     g_discovery_addr_count = 0;
     g_discovery_buffer_addr = 0;
+    discovery_reset_candidates();
+    if (discovery_multi_candidate_enabled()) {
+      discovery_note_dr_read(uc, dr, pc, ipsr, size, value);
+    }
 
   } else {
     // === Main loop context → firmware-read type (main_read) ===
@@ -4117,28 +4471,36 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
   uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
 
   if (ipsr != 0) {
-    // ---- In IRQ context: track taint-matching writes ----
+    // ---- In IRQ context: connect recent DR reads to RAM writes ----
+    if (g_discovery_irq_ipsr != 0 && ipsr != g_discovery_irq_ipsr) {
+      if (g_discovery_cross_irq_skip_count < 16) {
+        uint32_t pc = 0;
+        uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+        dt_learning_log("[DISCOVERY] WRITE_SKIP_IRQ dr=0x%x expected_ipsr=0x%x actual_ipsr=0x%x pc=0x%x addr=0x%x val=0x%x",
+                        g_discovery_dr, g_discovery_irq_ipsr, ipsr, pc,
+                        (uint32_t)address, (uint32_t)value);
+      }
+      g_discovery_cross_irq_skip_count++;
+      return;
+    }
 
-    if ((uint32_t)value == g_discovery_taint) {
-      if (g_discovery_irq_ipsr != 0 && ipsr != g_discovery_irq_ipsr) {
-        if (g_discovery_cross_irq_skip_count < 16) {
-          uint32_t pc = 0;
-          uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-          dt_learning_log("[DISCOVERY] TAINT_WRITE_SKIP_IRQ dr=0x%x expected_ipsr=0x%x actual_ipsr=0x%x pc=0x%x addr=0x%x val=0x%x",
-                          g_discovery_dr, g_discovery_irq_ipsr, ipsr, pc,
-                          (uint32_t)address, (uint32_t)value);
-        }
-        g_discovery_cross_irq_skip_count++;
+    if (discovery_multi_candidate_enabled()) {
+      DiscoveryReadToken *tok =
+          discovery_recent_unmatched_token(ipsr, (uint32_t)value);
+      if (tok) {
+        tok->matched = true;
+        discovery_note_candidate_write(uc, (uint32_t)address, size, tok);
         return;
       }
+    }
 
-      // Always track write addresses (Phase 1 buffer-addr discovery)
-      if (g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
-        g_discovery_addr_list[g_discovery_addr_count++] = (uint32_t)address;
-        dt_learning_log("[DISCOVERY] TAINT_WRITE #%d addr=0x%x val=0x%x",
-                        g_discovery_addr_count, (uint32_t)address,
-                        (uint32_t)value);
-      }
+    // Compatibility fallback for older one-byte taint discovery.
+    if (((uint32_t)value & 0xffu) == (g_discovery_taint & 0xffu) &&
+        g_discovery_addr_count < MAX_DISCOVERY_ADDRS) {
+      g_discovery_addr_list[g_discovery_addr_count++] = (uint32_t)address;
+      dt_learning_log("[DISCOVERY] TAINT_WRITE #%d addr=0x%x val=0x%x",
+                      g_discovery_addr_count, (uint32_t)address,
+                      (uint32_t)value);
     }
   } else {
     // ---- In main loop context ----
@@ -4182,10 +4544,52 @@ void hook_discovery_mem_write(uc_engine *uc, uc_mem_type type,
   }
 }
 
+
+void hook_discovery_candidate_read(uc_engine *uc, uc_mem_type type,
+    uint64_t address, int size, int64_t value, void *user_data) {
+  (void)type;
+  (void)size;
+  (void)value;
+  (void)user_data;
+
+  if (!discovery_multi_candidate_enabled()) return;
+  if (!g_in_discovery_mode || g_read_pc_done) return;
+
+  DiscoveryCandidate *cand =
+      discovery_find_candidate_by_addr((uint32_t)address);
+  if (!cand) return;
+
+  uint32_t ipsr = 0;
+  uint32_t pc = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+  uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  pc &= ~1u;
+
+  if (ipsr != 0) {
+    cand->seen_irq_read = true;
+    if (g_discovery_irq_read_skip_count < 16) {
+      dt_learning_log("[DISCOVERY] CAND_IRQ_READ dr=0x%x range=0x%x-0x%x "
+                      "pc=0x%x ipsr=0x%x addr=0x%x",
+                      g_discovery_dr, cand->start, cand->end, pc, ipsr,
+                      (uint32_t)address);
+    }
+    g_discovery_irq_read_skip_count++;
+    return;
+  }
+
+  cand->seen_main_read = true;
+  cand->main_read_pc = pc;
+  cand->main_callread_pc =
+      resolve_callread_pc_for_read(uc, pc, ipsr, "candidate_main_read");
+
+  discovery_select_candidate(uc, cand, "main_read");
+  try_finalize(uc);
+}
+
 // ====== Channel Discovery: Phase 1 buffer read callback ======
 
 // Fires when the discovered buffer address is read.
-// Captures read_pc (PC at buffer read) and callread_pc (LR = caller).
+// Captures read_pc (PC at buffer read) and callread_pc (direct caller callsite).
 // Bounds are inferred later, after static analysis supplies avail/consume PCs.
 void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
     uint64_t address, int size, int64_t value, void *user_data) {
@@ -4835,6 +5239,10 @@ static void finalize_discovery(uc_engine *uc) {
     uc_hook_del(uc, g_discovery_buffer_read_hook);
     g_discovery_buffer_read_hook = 0;
   }
+  if (g_discovery_candidate_read_hook) {
+    uc_hook_del(uc, g_discovery_candidate_read_hook);
+    g_discovery_candidate_read_hook = 0;
+  }
   g_in_discovery_mode = false;
 
   uint32_t matched_callread = 0;
@@ -4857,6 +5265,7 @@ static void finalize_discovery(uc_engine *uc) {
       g_discovery_read_pc = 0;
       g_discovery_callread_pc = 0;
       g_discovery_addr_count = 0;
+      discovery_reset_candidates();
       return;
     }
 
