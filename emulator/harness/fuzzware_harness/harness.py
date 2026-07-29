@@ -698,6 +698,16 @@ def configure_unicorn(args):
                                                                      removed_failures)
                                                 with open(json_f, 'w') as _f:
                                                     _json2.dump(latest, _f, indent=2)
+                                                if key == 'main_dt_set':
+                                                    try:
+                                                        bridge_res = ghidra_run_script(ghidra_port, "irq_bridge_static",
+                                                                                      [json_f, entry, vtor, indirect_map_path])
+                                                        if bridge_res:
+                                                            logging.info("[IRQ_BRIDGE] static candidates=%d json=%s dr=%s",
+                                                                         len(bridge_res), json_f, latest_dt.get('dr', '0x0'))
+                                                    except Exception as e:
+                                                        logging.warning("[IRQ_BRIDGE] static analysis failed dr=%s err=%s",
+                                                                        latest_dt.get('dr', '0x0'), e)
                                                 with open("/tmp/ghidra_done", 'w') as _f:
                                                     pass
                                                 logging.info("[GHIDRA-DAEMON] patched %s key=%s dr=%s",

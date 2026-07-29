@@ -211,6 +211,9 @@ def ghidra_run_script(port, script_type, args=[]):
     elif script_type == "callind_collect":
         logger.info("Ghidra callind_collect: %d items", len(response) if isinstance(response, list) else 0)
         return response
+    elif script_type == "irq_bridge_static":
+        logger.info("Ghidra irq_bridge_static: %d candidates", len(response) if isinstance(response, list) else 0)
+        return response
     elif script_type == "correct_lr":
         corrected = int(response, 16)
         logger.info("Ghidra correct_lr: %s -> 0x%x", args[0] if args else '?', corrected)

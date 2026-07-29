@@ -1,5 +1,6 @@
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <unicorn/unicorn.h>
 #ifndef DATA_TRACKER_H
 #define DATA_TRACKER_H
@@ -30,9 +31,26 @@ typedef struct DataTracker {
 #define MAX_DISCOVERY_ADDRS 1024
 #define MAX_AVAIL_HOOKS 200
 #define MAX_PENDING_HOOKS 128
+#define MAX_IRQ_BRIDGES 64
+
+typedef struct IrqBridge {
+    uint32_t dr;
+    uint32_t main_callread_pc;
+    uint32_t main_read_pc;
+    uint32_t irq_pc;
+    uint32_t avail_pc;
+    uint32_t cmp_pc;
+    short irq_num;
+    bool enabled;
+} IrqBridge;
 
 extern DataTracker *pending_dt_array;
 extern short pending_dt_array_index;
+
+extern IrqBridge *irq_bridge_array;
+extern short irq_bridge_array_index;
+extern IrqBridge *irq_bridge_candidate_array;
+extern short irq_bridge_candidate_array_index;
 
 extern uint32_t g_all_dr_addrs[MAX_DR_ADDRS];
 extern int g_num_dr_addrs;

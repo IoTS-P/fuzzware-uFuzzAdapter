@@ -20,11 +20,13 @@ port = int(args[0])
 # my_debug_log("port = ",port)
 # global_dict = globals()
 now_path = os.path.dirname(__file__)
-with open(os.path.join(now_path, "static_analyze/Callind_Collect.py"), "r") as ccf,open(os.path.join(now_path, "static_analyze/global_forward_slice_purely.py"), "r") as gfspf:
+with open(os.path.join(now_path, "static_analyze/Callind_Collect.py"), "r") as ccf,open(os.path.join(now_path, "static_analyze/global_forward_slice_purely.py"), "r") as gfspf,open(os.path.join(now_path, "static_analyze/irq_bridge_analyze.py"), "r") as ibaf:
     ccf_code = ccf.read()
     exec(ccf_code)
     gfspf_code = gfspf.read()
     exec(gfspf_code)
+    ibaf_code = ibaf.read()
+    exec(ibaf_code)
     my_debug_log("write success!")
     my_debug_log("port = ",port)
     
@@ -94,6 +96,11 @@ def handle_client(client_socket):
                 my_debug_log('exe the all_main_code')
                 my_debug_log("list = {}".format(list))
                 response = all_main(list[1],list[2],list[3],list[4],list[5],list[6])
+
+            elif run_type == "irq_bridge_static":
+                my_debug_log('exe the irq_bridge_static code')
+                my_debug_log("list = {}".format(list))
+                response = irq_bridge_main(list[1],list[2],list[3],list[4] if len(list) > 4 else None)
             
             # 用于纠正Lr寄存器
             elif run_type == "correct_lr":

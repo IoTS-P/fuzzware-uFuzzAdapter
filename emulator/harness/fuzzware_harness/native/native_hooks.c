@@ -191,6 +191,10 @@ typedef struct {
 DataTracker *pending_dt_array = NULL;
 short pending_dt_array_index = 0;
 
+IrqBridge *irq_bridge_array = NULL;
+short irq_bridge_array_index = 0;
+IrqBridge *irq_bridge_candidate_array = NULL;
+short irq_bridge_candidate_array_index = 0;
 
 uint32_t g_all_dr_addrs[MAX_DR_ADDRS] = {0};
 int g_num_dr_addrs = 0;
@@ -340,6 +344,23 @@ typedef struct {
 } BoundsDiagDispatchEntry;
 static BoundsDiagDispatchEntry g_bounds_diag_entries[BOUNDS_DIAG_HOOK_MAX] = {0};
 static int g_bounds_num_diag_hooks = 0;
+static int g_irq_bridge_validation_idx = -1;
+static uint32_t g_irq_bridge_validation_budget = 0;
+static bool g_irq_bridge_validation_active = false;
+static bool g_irq_bridge_seen_avail = false;
+static bool g_irq_bridge_seen_irq = false;
+static bool g_irq_bridge_seen_cmp = false;
+static bool g_irq_bridge_seen_main_read = false;
+typedef struct {
+  bool armed;
+  bool waiting_read;
+  uint32_t wait_budget;
+  uint64_t pend_log_count;
+  uint64_t rearm_log_count;
+} IrqBridgeRuntimeState;
+static IrqBridgeRuntimeState g_irq_bridge_rt[MAX_IRQ_BRIDGES] = {0};
+#define IRQ_BRIDGE_VALIDATION_BUDGET 100000u
+#define IRQ_BRIDGE_REARM_BUDGET 100000u
 #if BOUNDS_PC_TRACE_ENABLE
 static FILE *g_bounds_pc_trace_fp = NULL;
 static uint32_t g_bounds_pc_trace_round = 0;
@@ -376,6 +397,10 @@ static uint32_t resolve_callread_pc_for_read(uc_engine *uc, uint32_t read_pc,
     uint32_t ipsr, const char *reason);
 static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
     uint64_t address, uint32_t size);
+static int write_full_json(void);
+static void dispatch_irq_bridge_hook(uc_engine *uc, uint32_t pc);
+static void dispatch_irq_bridge_validation(uc_engine *uc, uint32_t pc);
+static bool start_irq_bridge_validation_if_needed(uc_engine *uc);
 static void bounds_prepare_retry_on_exit(uc_engine *uc, const char *reason);
 static void bounds_finish_round(uc_engine *uc, const char *reason);
 static DataTracker *bounds_find_dt(void);
@@ -1074,6 +1099,8 @@ static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
   }
 #endif
 
+  dispatch_irq_bridge_validation(uc, pc);
+  dispatch_irq_bridge_hook(uc, pc);
   dispatch_complete_dt_avail_hook(uc, pc, address, size);
 }
 
@@ -2566,8 +2593,11 @@ void initialize_data_tracker_arrays() {
   main_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
   irq_dt_array = malloc(DATATRACKER_SIZE * sizeof(DataTracker));
   pending_dt_array = malloc(MAX_PENDING_DRS * sizeof(DataTracker));
+  irq_bridge_array = malloc(MAX_IRQ_BRIDGES * sizeof(IrqBridge));
+  irq_bridge_candidate_array = malloc(MAX_IRQ_BRIDGES * sizeof(IrqBridge));
   // Check for NULL if allocation fails and handle it appropriately
-  if (!main_dt_array || !irq_dt_array || !pending_dt_array) {
+  if (!main_dt_array || !irq_dt_array || !pending_dt_array ||
+      !irq_bridge_array || !irq_bridge_candidate_array) {
     // Handle memory allocation error
     // For example, you could print an error message and exit
     fprintf(stderr, "Failed to allocate memory for data tracker arrays\n");
@@ -2576,6 +2606,8 @@ void initialize_data_tracker_arrays() {
   memset(main_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
   memset(irq_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
   memset(pending_dt_array, 0, MAX_PENDING_DRS * sizeof(DataTracker));
+  memset(irq_bridge_array, 0, MAX_IRQ_BRIDGES * sizeof(IrqBridge));
+  memset(irq_bridge_candidate_array, 0, MAX_IRQ_BRIDGES * sizeof(IrqBridge));
   printf("Data tracker arrays initialized\n");
 }
 
@@ -2913,6 +2945,11 @@ bool is_irq_managed_by_dt(int irq_num) {
     if (irq_dt_array[i].irq_num == irq_num)
       return true;
   }
+  for (int i = 0; i < irq_bridge_array_index; i++) {
+    IrqBridge *bridge = &irq_bridge_array[i];
+    if (bridge->enabled && bridge->irq_num == irq_num)
+      return true;
+  }
   return false;
 }
 
@@ -3191,9 +3228,14 @@ void reset_all_tracker_state(void) {
   main_dt_array_index = 0;
   irq_dt_array_index = 0;
   pending_dt_array_index = 0;
+  irq_bridge_array_index = 0;
+  irq_bridge_candidate_array_index = 0;
   memset(main_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
   memset(irq_dt_array, 0, DATATRACKER_SIZE * sizeof(DataTracker));
   memset(pending_dt_array, 0, MAX_PENDING_DRS * sizeof(DataTracker));
+  memset(irq_bridge_array, 0, MAX_IRQ_BRIDGES * sizeof(IrqBridge));
+  memset(irq_bridge_candidate_array, 0, MAX_IRQ_BRIDGES * sizeof(IrqBridge));
+  memset(g_irq_bridge_rt, 0, sizeof(g_irq_bridge_rt));
 
   // Clear hash table by re-creating it
   if (hash_table) {
@@ -3261,6 +3303,13 @@ void reset_all_tracker_state(void) {
   g_pseudo_escape_skip_irq_log_count = 0;
   memset(g_bounds_consume_pcs, 0, sizeof(g_bounds_consume_pcs));
   g_bounds_num_consume_pcs = 0;
+  g_irq_bridge_validation_idx = -1;
+  g_irq_bridge_validation_budget = 0;
+  g_irq_bridge_validation_active = false;
+  g_irq_bridge_seen_avail = false;
+  g_irq_bridge_seen_irq = false;
+  g_irq_bridge_seen_cmp = false;
+  g_irq_bridge_seen_main_read = false;
   memset(g_bounds_diag_entries, 0, sizeof(g_bounds_diag_entries));
   g_bounds_num_diag_hooks = 0;
 #if BOUNDS_PC_TRACE_ENABLE
@@ -3477,6 +3526,338 @@ static void parse_pseudo_channels(const char *json) {
   dt_learning_log("[PSEUDO] LOAD count=%d", g_num_pseudo_channels);
 }
 
+
+static bool json_extract_bool(const char *json_obj, const char *key,
+                              bool default_value) {
+  char search[128];
+  snprintf(search, sizeof(search), "\"%s\":", key);
+  const char *pos = strstr(json_obj, search);
+  if (!pos) return default_value;
+  pos += strlen(search);
+  while (*pos == ' ' || *pos == '\t') pos++;
+  if (strncmp(pos, "true", 4) == 0) return true;
+  if (strncmp(pos, "false", 5) == 0) return false;
+  return json_extract_int(json_obj, key) != 0;
+}
+
+static bool irq_bridge_same_key(const IrqBridge *a, const IrqBridge *b) {
+  return a && b &&
+         a->dr == b->dr &&
+         a->main_read_pc == b->main_read_pc &&
+         a->main_callread_pc == b->main_callread_pc;
+}
+
+static bool irq_bridge_confirmed_exists(const IrqBridge *candidate) {
+  for (int i = 0; i < irq_bridge_array_index; i++) {
+    if (irq_bridge_same_key(&irq_bridge_array[i], candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool irq_bridge_candidate_is_sane(const IrqBridge *candidate) {
+  if (!candidate) return false;
+  if (!candidate->avail_pc || !candidate->irq_pc || !candidate->main_read_pc ||
+      !candidate->main_callread_pc || !irq_num_is_valid(candidate->irq_num)) {
+    return false;
+  }
+  if ((candidate->avail_pc & ~1u) == (candidate->main_callread_pc & ~1u) ||
+      (candidate->avail_pc & ~1u) == (candidate->main_read_pc & ~1u)) {
+    return false;
+  }
+  return true;
+}
+
+static bool irq_bridge_candidate_exists_before(const IrqBridge *candidate,
+                                               int limit) {
+  for (int i = 0; i < limit && i < irq_bridge_candidate_array_index; i++) {
+    if (irq_bridge_same_key(&irq_bridge_candidate_array[i], candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void parse_irq_bridge_array(const char *json, const char *section_key,
+                                   IrqBridge *array, short *array_index,
+                                   bool confirmed_only) {
+  if (!json || !section_key || !array || !array_index) return;
+
+  *array_index = 0;
+  const char *section = strstr(json, section_key);
+  if (!section) {
+    dt_learning_log("[IRQ_BRIDGE] LOAD key=%s count=0 reason=missing",
+                    section_key);
+    return;
+  }
+
+  const char *cur = strstr(section, "[");
+  if (!cur) {
+    dt_learning_log("[IRQ_BRIDGE] LOAD key=%s count=0 reason=no_array",
+                    section_key);
+    return;
+  }
+
+  cur++;
+  while (*cur && *array_index < MAX_IRQ_BRIDGES) {
+    while (*cur == ' ' || *cur == '\t' || *cur == '\n' || *cur == '\r' || *cur == ',') cur++;
+    if (*cur == ']') break;
+
+    const char *obj_start = strstr(cur, "{");
+    if (!obj_start) break;
+    const char *obj_end = strstr(obj_start, "}");
+    if (!obj_end) break;
+
+    IrqBridge bridge;
+    memset(&bridge, 0, sizeof(bridge));
+    bridge.dr = json_extract_int(obj_start, "dr");
+    bridge.main_callread_pc = json_extract_int(obj_start, "main_callread_pc") & ~1u;
+    bridge.main_read_pc = json_extract_int(obj_start, "main_read_pc") & ~1u;
+    bridge.irq_pc = json_extract_int(obj_start, "irq_pc") & ~1u;
+    bridge.avail_pc = json_extract_int(obj_start, "avail_pc") & ~1u;
+    bridge.cmp_pc = json_extract_int(obj_start, "cmp_pc") & ~1u;
+    bridge.irq_num = (short)json_extract_int(obj_start, "irq_num");
+    bridge.enabled = json_extract_bool(obj_start, "enabled", true);
+
+    if (bridge.dr != 0 && bridge.main_read_pc != 0 &&
+        bridge.main_callread_pc != 0 && bridge.irq_pc != 0 &&
+        bridge.avail_pc != 0 && irq_num_is_valid(bridge.irq_num) &&
+        (!confirmed_only || bridge.enabled)) {
+      array[*array_index] = bridge;
+      (*array_index)++;
+    }
+
+    cur = obj_end + 1;
+    const char *next_brace = strstr(cur, "{");
+    const char *next_bracket = strstr(cur, "]");
+    if (!next_brace || (next_bracket && next_bracket < next_brace)) break;
+  }
+
+  dt_learning_log("[IRQ_BRIDGE] LOAD key=%s count=%d", section_key,
+                  *array_index);
+}
+
+static void irq_bridge_remove_candidate(int idx, const char *reason) {
+  if (idx < 0 || idx >= irq_bridge_candidate_array_index) return;
+  IrqBridge *bridge = &irq_bridge_candidate_array[idx];
+  dt_learning_log("[IRQ_BRIDGE] CANDIDATE_REMOVE reason=%s dr=0x%x irq=%d avail=0x%x cmp=0x%x main_read=0x%x",
+                  reason ? reason : "unknown", bridge->dr, bridge->irq_num,
+                  bridge->avail_pc, bridge->cmp_pc, bridge->main_read_pc);
+  for (int i = idx; i < irq_bridge_candidate_array_index - 1; i++) {
+    irq_bridge_candidate_array[i] = irq_bridge_candidate_array[i + 1];
+  }
+  irq_bridge_candidate_array_index--;
+  if (irq_bridge_candidate_array_index >= 0) {
+    memset(&irq_bridge_candidate_array[irq_bridge_candidate_array_index], 0,
+           sizeof(IrqBridge));
+  }
+}
+
+static bool irq_bridge_promote_candidate(int idx) {
+  if (idx < 0 || idx >= irq_bridge_candidate_array_index) return false;
+  if (irq_bridge_array_index >= MAX_IRQ_BRIDGES) return false;
+
+  IrqBridge bridge = irq_bridge_candidate_array[idx];
+  bridge.enabled = true;
+  if (!irq_bridge_confirmed_exists(&bridge)) {
+    irq_bridge_array[irq_bridge_array_index++] = bridge;
+    dt_learning_log("[IRQ_BRIDGE] PROMOTE dr=0x%x irq=%d irq_pc=0x%x avail=0x%x cmp=0x%x main_read=0x%x callread=0x%x",
+                    bridge.dr, bridge.irq_num, bridge.irq_pc, bridge.avail_pc,
+                    bridge.cmp_pc, bridge.main_read_pc,
+                    bridge.main_callread_pc);
+  }
+  irq_bridge_remove_candidate(idx, "confirmed");
+  return true;
+}
+
+static void irq_bridge_reset_validation(void) {
+  g_irq_bridge_validation_idx = -1;
+  g_irq_bridge_validation_budget = 0;
+  g_irq_bridge_validation_active = false;
+  g_irq_bridge_seen_avail = false;
+  g_irq_bridge_seen_irq = false;
+  g_irq_bridge_seen_cmp = false;
+  g_irq_bridge_seen_main_read = false;
+}
+
+static bool start_irq_bridge_validation_if_needed(uc_engine *uc) {
+  (void)uc;
+  if (g_irq_bridge_validation_active) return true;
+
+  bool changed = false;
+  for (int i = 0; i < irq_bridge_candidate_array_index; i++) {
+    IrqBridge *candidate = &irq_bridge_candidate_array[i];
+    if (!irq_bridge_candidate_is_sane(candidate)) {
+      irq_bridge_remove_candidate(i, "invalid_candidate");
+      changed = true;
+      i--;
+      continue;
+    }
+    if (irq_bridge_confirmed_exists(candidate)) {
+      irq_bridge_remove_candidate(i, "already_confirmed");
+      changed = true;
+      i--;
+      continue;
+    }
+    if (irq_bridge_candidate_exists_before(candidate, i)) {
+      irq_bridge_remove_candidate(i, "duplicate_candidate");
+      changed = true;
+      i--;
+      continue;
+    }
+    if (changed) {
+      write_full_json();
+      g_discovery_occurred = true;
+    }
+    g_irq_bridge_validation_idx = i;
+    // Do not start the validation budget until the firmware actually reaches
+    // the bridge wake point. A valid candidate may be loaded in a round that
+    // does not execute the main scheduler loop before reload.
+    g_irq_bridge_validation_budget = 0;
+    g_irq_bridge_validation_active = true;
+    g_irq_bridge_seen_avail = false;
+    g_irq_bridge_seen_irq = false;
+    g_irq_bridge_seen_cmp = false;
+    g_irq_bridge_seen_main_read = false;
+    dt_learning_log("[IRQ_BRIDGE] WAIT_AVAIL idx=%d dr=0x%x irq=%d irq_pc=0x%x avail=0x%x cmp=0x%x main_read=0x%x",
+                    i, candidate->dr, candidate->irq_num, candidate->irq_pc,
+                    candidate->avail_pc, candidate->cmp_pc,
+                    candidate->main_read_pc);
+    return true;
+  }
+  if (changed) {
+    write_full_json();
+    g_discovery_occurred = true;
+  }
+  return false;
+}
+
+static void dispatch_irq_bridge_validation(uc_engine *uc, uint32_t pc) {
+  if (!g_irq_bridge_validation_active) return;
+  if (g_irq_bridge_validation_idx < 0 ||
+      g_irq_bridge_validation_idx >= irq_bridge_candidate_array_index) {
+    irq_bridge_reset_validation();
+    return;
+  }
+
+  IrqBridge *bridge = &irq_bridge_candidate_array[g_irq_bridge_validation_idx];
+  if (pc == bridge->avail_pc && !g_irq_bridge_seen_avail) {
+    g_irq_bridge_seen_avail = true;
+    g_irq_bridge_validation_budget = IRQ_BRIDGE_VALIDATION_BUDGET;
+    nvic_set_pending(uc, bridge->irq_num, false);
+    dt_learning_log("[IRQ_BRIDGE] VALIDATE_PEND dr=0x%x irq=%d pc=0x%x budget=%u",
+                    bridge->dr, bridge->irq_num, pc,
+                    g_irq_bridge_validation_budget);
+  }
+
+  if (!g_irq_bridge_seen_avail) {
+    return;
+  }
+
+  if (pc == bridge->irq_pc) {
+    g_irq_bridge_seen_irq = true;
+  }
+  if (bridge->cmp_pc != 0 && pc == bridge->cmp_pc) {
+    g_irq_bridge_seen_cmp = true;
+  }
+  if (pc == bridge->main_read_pc || pc == bridge->main_callread_pc) {
+    uint32_t ipsr = 0;
+    uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+    if (ipsr == 0) {
+      g_irq_bridge_seen_main_read = true;
+    }
+  }
+
+  if (g_irq_bridge_seen_avail && g_irq_bridge_seen_irq &&
+      (bridge->cmp_pc == 0 || g_irq_bridge_seen_cmp) &&
+      g_irq_bridge_seen_main_read) {
+    irq_bridge_promote_candidate(g_irq_bridge_validation_idx);
+    irq_bridge_reset_validation();
+    write_full_json();
+    g_discovery_occurred = true;
+    do_exit(uc, UC_ERR_OK);
+    return;
+  }
+
+  if (g_irq_bridge_validation_budget > 0) {
+    g_irq_bridge_validation_budget--;
+  }
+  if (g_irq_bridge_seen_avail && g_irq_bridge_validation_budget == 0) {
+    dt_learning_log("[IRQ_BRIDGE] VALIDATE_FAIL reason=post_avail_budget dr=0x%x irq=%d seen_avail=%d seen_irq=%d seen_cmp=%d seen_main_read=%d",
+                    bridge->dr, bridge->irq_num,
+                    g_irq_bridge_seen_avail ? 1 : 0,
+                    g_irq_bridge_seen_irq ? 1 : 0,
+                    g_irq_bridge_seen_cmp ? 1 : 0,
+                    g_irq_bridge_seen_main_read ? 1 : 0);
+    irq_bridge_remove_candidate(g_irq_bridge_validation_idx, "validation_failed");
+    irq_bridge_reset_validation();
+    write_full_json();
+    g_discovery_occurred = true;
+    do_exit(uc, UC_ERR_OK);
+  }
+}
+
+static void irq_bridge_init_runtime_state(void) {
+  memset(g_irq_bridge_rt, 0, sizeof(g_irq_bridge_rt));
+  for (int i = 0; i < irq_bridge_array_index && i < MAX_IRQ_BRIDGES; i++) {
+    if (!irq_bridge_array[i].enabled) continue;
+    g_irq_bridge_rt[i].armed = true;
+    g_irq_bridge_rt[i].waiting_read = false;
+    g_irq_bridge_rt[i].wait_budget = 0;
+  }
+}
+
+static bool irq_bridge_should_log_runtime(uint64_t *counter) {
+  (*counter)++;
+  return *counter <= 16 || ((*counter & 0x3ffu) == 0);
+}
+
+static void dispatch_irq_bridge_hook(uc_engine *uc, uint32_t pc) {
+  for (int i = 0; i < irq_bridge_array_index && i < MAX_IRQ_BRIDGES; i++) {
+    IrqBridge *bridge = &irq_bridge_array[i];
+    IrqBridgeRuntimeState *rt = &g_irq_bridge_rt[i];
+    if (!bridge->enabled) continue;
+
+    if (rt->waiting_read) {
+      if (pc == bridge->main_read_pc || pc == bridge->main_callread_pc) {
+        uint32_t ipsr = 0;
+        uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+        if (ipsr == 0) {
+          rt->armed = true;
+          rt->waiting_read = false;
+          rt->wait_budget = 0;
+          if (irq_bridge_should_log_runtime(&rt->rearm_log_count)) {
+            dt_learning_log("[IRQ_BRIDGE] REARM dr=0x%x irq=%d pc=0x%x count=%llu",
+                            bridge->dr, bridge->irq_num, pc,
+                            (unsigned long long)rt->rearm_log_count);
+          }
+        }
+      } else if (rt->wait_budget > 0) {
+        rt->wait_budget--;
+        if (rt->wait_budget == 0) {
+          rt->armed = true;
+          rt->waiting_read = false;
+          dt_learning_log("[IRQ_BRIDGE] REARM_TIMEOUT dr=0x%x irq=%d avail=0x%x",
+                          bridge->dr, bridge->irq_num, bridge->avail_pc);
+        }
+      }
+    }
+
+    if (bridge->avail_pc != pc || !rt->armed) continue;
+
+    nvic_set_pending(uc, bridge->irq_num, false);
+    rt->armed = false;
+    rt->waiting_read = true;
+    rt->wait_budget = IRQ_BRIDGE_REARM_BUDGET;
+    if (irq_bridge_should_log_runtime(&rt->pend_log_count)) {
+      dt_learning_log("[IRQ_BRIDGE] PEND dr=0x%x irq=%d avail=0x%x wait_read=0x%x count=%llu",
+                      bridge->dr, bridge->irq_num, pc, bridge->main_read_pc,
+                      (unsigned long long)rt->pend_log_count);
+    }
+  }
+}
+
 static void parse_main_dt_failures(const char *json) {
   g_num_main_dt_failures = 0;
   memset(g_main_dt_failures, 0, sizeof(g_main_dt_failures));
@@ -3565,6 +3946,13 @@ void json_reload_dt_arrays(uc_engine *uc) {
   json_preserve_array_field(buf, "main_dt_failures",
                             g_json_main_dt_failures_raw,
                             sizeof(g_json_main_dt_failures_raw));
+
+  parse_irq_bridge_array(buf, "\"irq_bridge_set\":",
+                         irq_bridge_array, &irq_bridge_array_index, true);
+  parse_irq_bridge_array(buf, "\"irq_bridge_candidates\":",
+                         irq_bridge_candidate_array,
+                         &irq_bridge_candidate_array_index, false);
+  irq_bridge_init_runtime_state();
 
   // Parse irq_dt_set array
   const char *irq_section = strstr(buf, "\"irq_dt_set\":");
@@ -3735,6 +4123,7 @@ static bool has_unknown_discovery_dr(void) {
   return false;
 }
 
+
 // Rebuild placeholder DTs and monitor hooks for unknown DRs
 void rebuild_pending_drs(uc_engine *uc) {
   for (int i = 0; i < g_num_dr_addrs; i++) {
@@ -3782,6 +4171,8 @@ void rebuild_pending_drs(uc_engine *uc) {
     pending_dt_array_index++;
     dt_learning_log("[PENDING] dr=0x%x placeholder created", dr);
   }
+
+
   dt_learning_log("[PENDING] total=%d", pending_dt_array_index);
 }
 
@@ -3809,7 +4200,16 @@ int per_round_reload(uc_engine *uc) {
   // learning below.
   ufuzz_adapter_add_avail_hook(uc);
 
-  // 5. Prefer post-static-analysis bounds learning for incomplete irq_dt
+  // 5. Validate IRQ->main-read bridge candidates before bounds learning.
+  // Bounds can keep an incomplete irq_dt active for many rounds; bridge
+  // validation is candidate-scoped and does not mutate main_dt/irq_dt data.
+  if (start_irq_bridge_validation_if_needed(uc)) {
+    printf("[PER_ROUND] IRQ bridge validation active: candidates=%d confirmed=%d\n",
+           irq_bridge_candidate_array_index, irq_bridge_array_index);
+    return 0;
+  }
+
+  // 6. Prefer post-static-analysis bounds learning for incomplete irq_dt
   // entries. Pending DR discovery remains disabled while bounds is active, but
   // complete DTs keep their normal avail hooks installed.
   if (start_bounds_learning_if_needed(uc)) {
@@ -3818,7 +4218,7 @@ int per_round_reload(uc_engine *uc) {
     return 0;
   }
 
-  // 6. Create placeholder DTs for unknown DRs
+  // 7. Create placeholder DTs for unknown DRs
   rebuild_pending_drs(uc);
 
   // // Init delivery budget
@@ -3898,6 +4298,36 @@ static int write_full_json(void) {
   }
   fprintf(fp, "],\n");
 
+  fprintf(fp, "  \"irq_bridge_set\": [\n");
+  for (int i = 0; i < irq_bridge_array_index; i++) {
+    IrqBridge *bridge = &irq_bridge_array[i];
+    fprintf(fp, "    {\"state\": \"confirmed\", \"enabled\": %s, "
+            "\"dr\": \"0x%x\", \"main_callread_pc\": \"0x%x\", "
+            "\"main_read_pc\": \"0x%x\", \"irq_pc\": \"0x%x\", "
+            "\"irq_num\": %d, \"avail_pc\": \"0x%x\", "
+            "\"cmp_pc\": \"0x%x\"}%s\n",
+            bridge->enabled ? "true" : "false", bridge->dr,
+            bridge->main_callread_pc, bridge->main_read_pc, bridge->irq_pc,
+            bridge->irq_num, bridge->avail_pc, bridge->cmp_pc,
+            (i < irq_bridge_array_index - 1) ? "," : "");
+  }
+  fprintf(fp, "  ],\n");
+
+  fprintf(fp, "  \"irq_bridge_candidates\": [\n");
+  for (int i = 0; i < irq_bridge_candidate_array_index; i++) {
+    IrqBridge *bridge = &irq_bridge_candidate_array[i];
+    fprintf(fp, "    {\"state\": \"candidate\", \"enabled\": %s, "
+            "\"dr\": \"0x%x\", \"main_callread_pc\": \"0x%x\", "
+            "\"main_read_pc\": \"0x%x\", \"irq_pc\": \"0x%x\", "
+            "\"irq_num\": %d, \"avail_pc\": \"0x%x\", "
+            "\"cmp_pc\": \"0x%x\"}%s\n",
+            bridge->enabled ? "true" : "false", bridge->dr,
+            bridge->main_callread_pc, bridge->main_read_pc, bridge->irq_pc,
+            bridge->irq_num, bridge->avail_pc, bridge->cmp_pc,
+            (i < irq_bridge_candidate_array_index - 1) ? "," : "");
+  }
+  fprintf(fp, "  ],\n");
+
   // Remaining fields (empty, for semu-fuzz compatibility)
   fprintf(fp, "  \"blacklist\": %s,\n", g_json_blacklist_raw);
   fprintf(fp, "  \"pseudo_channels\": %s,\n", g_json_pseudo_channels_raw);
@@ -3910,8 +4340,10 @@ static int write_full_json(void) {
   fprintf(fp, "}\n");
 
   fclose(fp);
-  dt_learning_log("[JSON_WRITE] irq_dt=%d main_dt=%d path=%s",
-                  irq_dt_array_index, main_dt_array_index, g_json_file_path);
+  dt_learning_log("[JSON_WRITE] irq_dt=%d main_dt=%d bridge=%d candidates=%d path=%s",
+                  irq_dt_array_index, main_dt_array_index,
+                  irq_bridge_array_index, irq_bridge_candidate_array_index,
+                  g_json_file_path);
   return 0;
 }
 
