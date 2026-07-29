@@ -586,11 +586,7 @@ def configure_unicorn(args):
                                         for dt in data.get(key, []):
                                             if dt.get('avail_pc', '0x0') != '0x0':
                                                 continue  # already has result
-                                            raw_lr = int(dt['callread_pc'], 16)
-                                            try:
-                                                cr = ghidra_run_script(ghidra_port, "correct_lr", [raw_lr])
-                                            except Exception:
-                                                cr = raw_lr
+                                            cr = int(dt['callread_pc'], 16) & ~1
                                             rpc = int(dt['read_pc'], 16)
                                             ipc = int(dt['irq_pc'], 16) if dt.get('irq_pc', '0x0') != '0x0' else 0
                                             ba = int(dt['buffer_addr'], 16) if dt.get('buffer_addr', '0x0') != '0x0' else 0

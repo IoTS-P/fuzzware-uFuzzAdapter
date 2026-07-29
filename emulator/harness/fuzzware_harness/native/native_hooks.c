@@ -183,6 +183,9 @@ uint32_t g_discovery_read_pc = 0;
 uint32_t g_discovery_callread_pc = 0;
 uc_hook g_discovery_buffer_read_hook = 0;
 bool g_read_pc_done = false;
+static bool g_dt_callstack_early_requested = false;
+static bool g_dt_callstack_early_active = false;
+
 
 // Post-static-analysis bound learning state:
 // after Ghidra fills avail_pc/consume_pc_set, learn buffer_min_len and
@@ -205,6 +208,7 @@ bool g_read_pc_done = false;
 #define MAX_MAIN_DT_FAILURES 1024
 #define MAX_ACTIVE_PSEUDO_DRS 64
 #define MAX_FUNCTION_ENTRIES 8192
+#define DT_CALLSTACK_MAX 128
 #define PSEUDO_MAX_RETRY 5
 #define MAIN_DT_MAX_RETRY 5
 #define PSEUDO_DIRTY_BYTE 0xBB
@@ -256,6 +260,13 @@ typedef struct {
   uint32_t callread_pc;
   uint32_t retry_count;
 } MainDtFailure;
+typedef struct {
+  uint32_t func_entry;
+  uint32_t return_pc;
+  uint32_t callsite_pc;
+  uint32_t ipsr;
+  uint32_t sp;
+} DtCallFrame;
 static IndirectCallSite g_indirect_sites[MAX_INDIRECT_CALL_SITES] = {0};
 static int g_num_indirect_sites = 0;
 static bool g_indirect_enabled = true;
@@ -269,6 +280,11 @@ static MainDtFailure g_main_dt_failures[MAX_MAIN_DT_FAILURES] = {0};
 static int g_num_main_dt_failures = 0;
 static uint32_t g_function_entries[MAX_FUNCTION_ENTRIES] = {0};
 static int g_num_function_entries = 0;
+static DtCallFrame g_dt_callstack[DT_CALLSTACK_MAX] = {0};
+static int g_dt_callstack_depth = 0;
+static uint32_t g_dt_prev_pc = 0;
+static uint32_t g_dt_prev_ipsr = 0;
+static int g_dt_callstack_overflow_count = 0;
 static bool g_pseudo_active = false;
 static uint32_t g_pseudo_callread_pc = 0;
 static uint32_t g_pseudo_dr = 0;
@@ -314,6 +330,10 @@ static void hook_pseudo_escape_block(uc_engine *uc, uint64_t address,
     uint32_t size, void *user_data);
 static void dispatch_indirect_call(uc_engine *uc, uint32_t pc);
 static void dispatch_pseudo_callread(uc_engine *uc, uint32_t pc);
+static void dt_callstack_on_code(uc_engine *uc, uint32_t pc);
+static void dt_callstack_reset(void);
+static uint32_t resolve_callread_pc_for_read(uc_engine *uc, uint32_t read_pc,
+    uint32_t ipsr, const char *reason);
 static bool dispatch_complete_dt_avail_hook(uc_engine *uc, uint32_t pc,
     uint64_t address, uint32_t size);
 static void bounds_prepare_retry_on_exit(uc_engine *uc, const char *reason);
@@ -418,6 +438,241 @@ static bool is_function_entry(uint32_t pc) {
   return false;
 }
 
+static bool code_addr_in_text(uint32_t addr) {
+  uint64_t pc = (uint64_t)(addr & ~1u);
+  return pc >= g_code_hook_begin && pc <= g_code_hook_end;
+}
+
+static uint32_t find_function_entry_for_pc(uint32_t pc) {
+  pc &= ~1u;
+  if (!code_addr_in_text(pc) || g_num_function_entries <= 0) {
+    return 0;
+  }
+
+  int lo = 0;
+  int hi = g_num_function_entries - 1;
+  uint32_t best = 0;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    uint32_t mid_pc = g_function_entries[mid];
+    if (mid_pc <= pc) {
+      best = mid_pc;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return code_addr_in_text(best) ? best : 0;
+}
+
+static bool dt_callstack_enabled(void) {
+  return g_num_function_entries > 0 &&
+         (g_dt_callstack_early_active ||
+          g_in_discovery_mode ||
+          g_discovery_buffer_read_hook != 0);
+}
+
+static bool thumb_pc_is_link_call(uc_engine *uc, uint32_t pc,
+                                  const char **kind) {
+  pc &= ~1u;
+  if (!code_addr_in_text(pc)) {
+    return false;
+  }
+
+  uint16_t h1 = 0;
+  if (uc_mem_read(uc, pc, &h1, sizeof(h1)) != UC_ERR_OK) {
+    return false;
+  }
+
+  if ((h1 & 0xff87u) == 0x4780u) {
+    if (kind) *kind = "BLX_REG";
+    return true;
+  }
+
+  uint16_t h2 = 0;
+  if (!code_addr_in_text(pc + 2) ||
+      uc_mem_read(uc, pc + 2, &h2, sizeof(h2)) != UC_ERR_OK) {
+    return false;
+  }
+
+  if ((h1 & 0xf800u) == 0xf000u && (h2 & 0xc000u) == 0xc000u) {
+    if (kind) *kind = (h2 & 0x1000u) ? "BL" : "BLX_IMM";
+    return true;
+  }
+
+  return false;
+}
+
+static uint32_t return_addr_to_callsite(uc_engine *uc, uint32_t lr) {
+  uint32_t ret = lr & ~1u;
+  const char *kind = NULL;
+
+  if (ret >= 2 && thumb_pc_is_link_call(uc, ret - 2, &kind)) {
+    return ret - 2;
+  }
+  if (ret >= 4 && thumb_pc_is_link_call(uc, ret - 4, &kind)) {
+    return ret - 4;
+  }
+
+  uint16_t h = 0;
+  if (ret >= 4 && code_addr_in_text(ret - 4) &&
+      uc_mem_read(uc, ret - 4, &h, sizeof(h)) == UC_ERR_OK &&
+      get_instruction_size(h, true) == 4) {
+    return ret - 4;
+  }
+  if (ret >= 2 && code_addr_in_text(ret - 2)) {
+    return ret - 2;
+  }
+
+  return 0;
+}
+
+static void dt_callstack_reset(void) {
+  memset(g_dt_callstack, 0, sizeof(g_dt_callstack));
+  g_dt_callstack_depth = 0;
+  g_dt_prev_pc = 0;
+  g_dt_prev_ipsr = 0;
+}
+
+static void dt_callstack_set_early_active(bool active, const char *reason) {
+  if (g_dt_callstack_early_active == active) {
+    return;
+  }
+
+  g_dt_callstack_early_active = active;
+  dt_callstack_reset();
+
+  dt_learning_log("[CALLSTACK] EARLY_%s reason=%s drs=%d funcs=%d",
+                  active ? "ON" : "OFF",
+                  reason ? reason : "unknown",
+                  g_num_dr_addrs,
+                  g_num_function_entries);
+}
+
+static void dt_callstack_pop_returns(uint32_t pc, uint32_t ipsr) {
+  pc &= ~1u;
+  while (g_dt_callstack_depth > 0) {
+    DtCallFrame *top = &g_dt_callstack[g_dt_callstack_depth - 1];
+    if (top->return_pc != pc || top->ipsr != ipsr) {
+      break;
+    }
+    memset(top, 0, sizeof(*top));
+    g_dt_callstack_depth--;
+  }
+}
+
+static void dt_callstack_push(uint32_t func_entry, uint32_t return_pc,
+                              uint32_t callsite_pc, uint32_t ipsr,
+                              uint32_t sp) {
+  func_entry &= ~1u;
+  return_pc &= ~1u;
+  callsite_pc &= ~1u;
+
+  if (func_entry == 0 || return_pc == 0 || callsite_pc == 0) {
+    return;
+  }
+
+  if (g_dt_callstack_depth > 0) {
+    DtCallFrame *top = &g_dt_callstack[g_dt_callstack_depth - 1];
+    if (top->func_entry == func_entry && top->return_pc == return_pc &&
+        top->callsite_pc == callsite_pc && top->ipsr == ipsr) {
+      top->sp = sp;
+      return;
+    }
+  }
+
+  if (g_dt_callstack_depth >= DT_CALLSTACK_MAX) {
+    memmove(&g_dt_callstack[0], &g_dt_callstack[1],
+            (DT_CALLSTACK_MAX - 1) * sizeof(g_dt_callstack[0]));
+    g_dt_callstack_depth = DT_CALLSTACK_MAX - 1;
+    if (g_dt_callstack_overflow_count < 16) {
+      dt_learning_log("[CALLSTACK] OVERFLOW drop_oldest max=%d", DT_CALLSTACK_MAX);
+      g_dt_callstack_overflow_count++;
+    }
+  }
+
+  DtCallFrame *frame = &g_dt_callstack[g_dt_callstack_depth++];
+  frame->func_entry = func_entry;
+  frame->return_pc = return_pc;
+  frame->callsite_pc = callsite_pc;
+  frame->ipsr = ipsr;
+  frame->sp = sp;
+}
+
+static uint32_t dt_callstack_find_callsite(uint32_t func_entry, uint32_t ipsr) {
+  func_entry &= ~1u;
+  for (int i = g_dt_callstack_depth - 1; i >= 0; i--) {
+    DtCallFrame *frame = &g_dt_callstack[i];
+    if (frame->func_entry == func_entry && frame->ipsr == ipsr &&
+        frame->callsite_pc != 0) {
+      return frame->callsite_pc;
+    }
+  }
+  return 0;
+}
+
+static void dt_callstack_on_code(uc_engine *uc, uint32_t pc) {
+  if (!dt_callstack_enabled()) {
+    g_dt_prev_pc = 0;
+    g_dt_prev_ipsr = 0;
+    return;
+  }
+
+  pc &= ~1u;
+  uint32_t ipsr = 0;
+  uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
+
+  dt_callstack_pop_returns(pc, ipsr);
+
+  if (is_function_entry(pc)) {
+    uint32_t lr = 0;
+    uint32_t sp = 0;
+    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+    uc_reg_read(uc, UC_ARM_REG_SP, &sp);
+
+    uint32_t return_pc = lr & ~1u;
+    if (code_addr_in_text(return_pc)) {
+      uint32_t callsite_pc = 0;
+      const char *kind = NULL;
+      if (g_dt_prev_pc != 0 && g_dt_prev_ipsr == ipsr &&
+          thumb_pc_is_link_call(uc, g_dt_prev_pc, &kind)) {
+        callsite_pc = g_dt_prev_pc & ~1u;
+      } else {
+        callsite_pc = return_addr_to_callsite(uc, lr);
+      }
+      dt_callstack_push(pc, return_pc, callsite_pc, ipsr, sp);
+    }
+  }
+
+  g_dt_prev_pc = pc;
+  g_dt_prev_ipsr = ipsr;
+}
+
+static uint32_t resolve_callread_pc_for_read(uc_engine *uc, uint32_t read_pc,
+                                             uint32_t ipsr,
+                                             const char *reason) {
+  read_pc &= ~1u;
+  uint32_t read_func = find_function_entry_for_pc(read_pc);
+  if (read_func != 0) {
+    uint32_t callread_pc = dt_callstack_find_callsite(read_func, ipsr);
+    if (callread_pc != 0) {
+      dt_learning_log("[CALLREAD] RESOLVE reason=%s read_pc=0x%x read_func=0x%x callread=0x%x ipsr=0x%x depth=%d",
+                      reason ? reason : "unknown", read_pc, read_func,
+                      callread_pc, ipsr, g_dt_callstack_depth);
+      return callread_pc;
+    }
+  }
+
+  uint32_t lr = 0;
+  uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+  uint32_t fallback = return_addr_to_callsite(uc, lr);
+  dt_learning_log("[CALLREAD] FALLBACK reason=%s read_pc=0x%x read_func=0x%x raw_lr=0x%x callread=0x%x ipsr=0x%x depth=%d",
+                  reason ? reason : "unknown", read_pc, read_func, lr,
+                  fallback, ipsr, g_dt_callstack_depth);
+  return fallback;
+}
+
 static int find_pseudo_channel_index(uint32_t pc) {
   pc &= ~1u;
   for (int i = 0; i < g_num_pseudo_channels; i++) {
@@ -439,10 +694,10 @@ static PseudoChannel *find_pseudo_buffer_hint(uint32_t dr, uint32_t irq_pc) {
   return NULL;
 }
 
-static bool is_known_pseudo_callread(uint32_t dr, uint32_t raw_lr,
+static bool is_known_pseudo_callread(uint32_t dr, uint32_t observed_callread_pc,
                                      uint32_t *matched_callread,
                                      uint32_t *retry_count) {
-  uint32_t ret_addr = raw_lr & ~1u;
+  uint32_t observed = observed_callread_pc & ~1u;
 
   for (int i = 0; i < g_num_pseudo_channels; i++) {
     PseudoChannel *ch = &g_pseudo_channels[i];
@@ -451,7 +706,7 @@ static bool is_known_pseudo_callread(uint32_t dr, uint32_t raw_lr,
     }
 
     uint32_t pc = ch->callread_pc & ~1u;
-    if (ret_addr == pc || ret_addr == pc + 2 || ret_addr == pc + 4) {
+    if (observed == pc || observed == pc + 2 || observed == pc + 4) {
       if (matched_callread) {
         *matched_callread = pc;
       }
@@ -466,11 +721,11 @@ static bool is_known_pseudo_callread(uint32_t dr, uint32_t raw_lr,
 }
 
 static bool is_known_main_dt_failure(uint32_t dr, uint32_t read_pc,
-                                     uint32_t raw_lr,
+                                     uint32_t observed_callread_pc,
                                      uint32_t *matched_callread,
                                      uint32_t *retry_count) {
   uint32_t read_addr = read_pc & ~1u;
-  uint32_t ret_addr = raw_lr & ~1u;
+  uint32_t observed = observed_callread_pc & ~1u;
 
   for (int i = 0; i < g_num_main_dt_failures; i++) {
     MainDtFailure *failure = &g_main_dt_failures[i];
@@ -479,7 +734,7 @@ static bool is_known_main_dt_failure(uint32_t dr, uint32_t read_pc,
     }
 
     uint32_t pc = failure->callread_pc & ~1u;
-    if (ret_addr == pc || ret_addr == pc + 2 || ret_addr == pc + 4) {
+    if (observed == pc || observed == pc + 2 || observed == pc + 4) {
       if (matched_callread) {
         *matched_callread = pc;
       }
@@ -739,6 +994,7 @@ static void hook_bounds_dispatch(uc_engine *uc, uint64_t address,
     uint32_t size, void *user_data) {
   uint32_t pc = (uint32_t)address & ~1u;
 
+  dt_callstack_on_code(uc, pc);
   dispatch_indirect_call(uc, pc);
   dispatch_pseudo_callread(uc, pc);
 
@@ -888,6 +1144,7 @@ void do_exit(uc_engine *uc, uc_err err) {
     g_in_discovery_mode = false;
   }
 
+  dt_callstack_reset();
   reset_datatrcker_and_global_vars();
   if (do_print_exit_info) {
     fflush(stdout);
@@ -2814,6 +3071,10 @@ int store_dr_list(uint32_t *dr_addrs, int num_drs,
     pending_dt_array = calloc(MAX_PENDING_DRS, sizeof(DataTracker));
   }
 
+  g_dt_callstack_early_requested = (g_num_dr_addrs > 0);
+  dt_callstack_set_early_active(g_dt_callstack_early_requested,
+                                "store_dr_list");
+
   dt_learning_log("[STORE_DR] drs=%d json=%s vtor=0x%x",
                   g_num_dr_addrs, g_json_file_path, vtor_num);
   return 0;
@@ -2899,6 +3160,10 @@ void reset_all_tracker_state(void) {
   g_discovery_callread_pc = 0;
   g_discovery_buffer_read_hook = 0;
   g_read_pc_done = false;
+
+  dt_callstack_reset();
+  dt_learning_log("[CALLSTACK] RESET reason=tracker_reset early=%d",
+                  g_dt_callstack_early_active ? 1 : 0);
 
   // Reset post-static-analysis bounds learning state.
   g_bounds_state = 0;
@@ -3373,10 +3638,40 @@ void json_reload_dt_arrays(uc_engine *uc) {
                   irq_dt_array_index, main_dt_array_index);
 }
 
-// Check if a DR address is already managed by a known DT
-static bool dr_has_known_dt(uint32_t dr) {
+// Check if a DR address already has a valid learned DT.
+static bool dr_has_valid_dt(uint32_t dr) {
   khint_t k = kh_get(dr_dt, hash_table, dr);
-  return (k != kh_end(hash_table));
+  if (k == kh_end(hash_table)) {
+    return false;
+  }
+
+  DataTracker *dt = kh_value(hash_table, k);
+  if (!dt || dt->dr != dr) {
+    return false;
+  }
+
+  if (dt->read_pc == 0 || dt->callread_pc == 0) {
+    return false;
+  }
+
+  if (dt->irq_pc == 0) {
+    return true;
+  }
+
+  if (dt->buffer_addr != 0 && irq_num_is_valid(dt->irq_num)) {
+    return true;
+  }
+
+  return false;
+}
+
+static bool has_unknown_discovery_dr(void) {
+  for (int i = 0; i < g_num_dr_addrs; i++) {
+    if (!dr_has_valid_dt(g_all_dr_addrs[i])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Rebuild placeholder DTs and monitor hooks for unknown DRs
@@ -3385,7 +3680,7 @@ void rebuild_pending_drs(uc_engine *uc) {
     uint32_t dr = g_all_dr_addrs[i];
 
     // Skip if already has a known DT (from JSON)
-    if (dr_has_known_dt(dr)) {
+    if (dr_has_valid_dt(dr)) {
       continue;
     }
 
@@ -3443,6 +3738,10 @@ int per_round_reload(uc_engine *uc) {
 
   // 3. Read JSON & fill known DT arrays
   json_reload_dt_arrays(uc);
+  if (g_dt_callstack_early_requested) {
+    dt_callstack_set_early_active(has_unknown_discovery_dr(),
+                                  "after_json_reload");
+  }
   debug_log_target_irq_pc(uc, "per_round_reload");
 
   // 4. Add normal avail hooks for DTs that are already complete. Incomplete
@@ -3686,6 +3985,7 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
   uc_reg_read(uc, UC_ARM_REG_IPSR, &ipsr);
   uint32_t pc = 0;
   uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+  pc &= ~1u;
 
   if (g_pseudo_dr_read_diag_count < 512) {
     dt_learning_log("[DISCOVERY] DR_READ_AFTER_DIAG dr=0x%x pc=0x%x ipsr=0x%x size=%d value=0x%llx pseudo_active=%d pseudo_callread=0x%x in_discovery=%d",
@@ -3759,22 +4059,22 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     // === Main loop context → firmware-read type (main_read) ===
     dt_learning_log("[DISCOVERY] MAIN_DR_READ dr=0x%x pc=0x%x", dr, pc);
 
-    uint32_t lr = 0;
-    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+    uint32_t callread_pc =
+        resolve_callread_pc_for_read(uc, pc, ipsr, "main_dr_read");
 
     uint32_t matched_callread = 0;
     uint32_t main_retry_count = 0;
-    if (is_known_main_dt_failure(dr, pc, lr, &matched_callread,
+    if (is_known_main_dt_failure(dr, pc, callread_pc, &matched_callread,
                                   &main_retry_count)) {
       if (main_retry_count >= MAIN_DT_MAX_RETRY) {
-        dt_learning_log("[DISCOVERY] SKIP_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x raw_lr=0x%x matched=0x%x retry=%u max=%u",
-                        dr, pc, lr, matched_callread, main_retry_count,
-                        MAIN_DT_MAX_RETRY);
+        dt_learning_log("[DISCOVERY] SKIP_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x callread=0x%x matched=0x%x retry=%u max=%u",
+                        dr, pc, callread_pc, matched_callread,
+                        main_retry_count, MAIN_DT_MAX_RETRY);
         return;
       }
-      dt_learning_log("[DISCOVERY] RETRY_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x raw_lr=0x%x matched=0x%x retry=%u max=%u",
-                      dr, pc, lr, matched_callread, main_retry_count,
-                      MAIN_DT_MAX_RETRY);
+      dt_learning_log("[DISCOVERY] RETRY_MAIN_DT_FAILURE dr=0x%x read_pc=0x%x callread=0x%x matched=0x%x retry=%u max=%u",
+                      dr, pc, callread_pc, matched_callread,
+                      main_retry_count, MAIN_DT_MAX_RETRY);
     }
 
     // Create main_dt with read_pc and callread_pc
@@ -3782,7 +4082,7 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     memset(dt, 0, sizeof(DataTracker));
     dt->dr = dr;
     dt->read_pc = pc;
-    dt->callread_pc = lr;  // raw LR, corrected by Ghidra correct_lr later
+    dt->callread_pc = callread_pc;
     dt->irq_pc = 0;
     dt->buffer_addr = 0;
     dt->irq_num = 0;
@@ -3797,7 +4097,7 @@ void hook_pending_dr_read_after(uc_engine *uc, uc_mem_type type,
     main_dt_array_index++;
 
     dt_learning_log("[DISCOVERY] MAIN_DT dr=0x%x read_pc=0x%x callread_pc=0x%x",
-                    dr, pc, lr);
+                    dr, pc, callread_pc);
     // Write updated JSON before notifying the Ghidra daemon.
     write_full_json();
     signal_ghidra_pending("main_dt", dr);
@@ -3908,12 +4208,12 @@ void hook_phase1_buffer_read(uc_engine *uc, uc_mem_type type,
   }
 
   uint32_t pc = 0;
-  uint32_t lr = 0;
   uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-  uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+  pc &= ~1u;
 
   g_discovery_read_pc = pc;
-  g_discovery_callread_pc = lr;  // raw LR, corrected by Ghidra correct_lr later
+  g_discovery_callread_pc =
+      resolve_callread_pc_for_read(uc, pc, ipsr, "buffer_read");
   g_read_pc_done = true;
 
   if (g_discovery_buffer_read_hook) {
@@ -4542,7 +4842,7 @@ static void finalize_discovery(uc_engine *uc) {
   if (is_known_pseudo_callread(g_discovery_dr, g_discovery_callread_pc,
                                &matched_callread, &pseudo_retry_count)) {
     if (pseudo_retry_count >= PSEUDO_MAX_RETRY) {
-      dt_learning_log("[DISCOVERY] SKIP_KNOWN_PSEUDO dr=0x%x raw_callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
+      dt_learning_log("[DISCOVERY] SKIP_KNOWN_PSEUDO dr=0x%x callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
                       g_discovery_dr, g_discovery_callread_pc,
                       matched_callread, pseudo_retry_count,
                       PSEUDO_MAX_RETRY, g_discovery_read_pc,
@@ -4560,7 +4860,7 @@ static void finalize_discovery(uc_engine *uc) {
       return;
     }
 
-    dt_learning_log("[DISCOVERY] RETRY_KNOWN_PSEUDO dr=0x%x raw_callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
+    dt_learning_log("[DISCOVERY] RETRY_KNOWN_PSEUDO dr=0x%x callread=0x%x matched=0x%x retry=%u max=%u read_pc=0x%x buf=0x%x irq_pc=0x%x",
                     g_discovery_dr, g_discovery_callread_pc,
                     matched_callread, pseudo_retry_count,
                     PSEUDO_MAX_RETRY, g_discovery_read_pc,
