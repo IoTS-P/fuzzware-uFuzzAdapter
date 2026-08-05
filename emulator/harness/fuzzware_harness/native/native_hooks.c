@@ -285,6 +285,8 @@ static uint32_t g_bounds_consume_pcs[16] = {0};
 static int g_bounds_num_consume_pcs = 0;
 typedef struct {
   uint32_t src_pc;
+  uint32_t null_count;
+  bool null_reported;
 } IndirectCallSite;
 typedef struct {
   uint32_t callread_pc;
@@ -411,7 +413,7 @@ uc_err irq_avail_hook_handler(uc_engine *uc, uint64_t pc, uint32_t size,
                               void *user_data);
 
 #ifndef DT_LEARNING_LOG_ENABLE
-#define DT_LEARNING_LOG_ENABLE 0
+#define DT_LEARNING_LOG_ENABLE 1
 #endif
 
 static void dt_learning_log(const char *fmt, ...) {
@@ -1006,6 +1008,7 @@ static void dispatch_indirect_call(uc_engine *uc, uint32_t pc) {
     return;
   }
 
+  IndirectCallSite *site = &g_indirect_sites[idx];
   uint32_t target = 0;
   const char *kind = NULL;
   if (!decode_thumb_bx_blx_target(uc, pc, &target, &kind)) {
@@ -1013,7 +1016,14 @@ static void dispatch_indirect_call(uc_engine *uc, uint32_t pc) {
   }
 
   if (target == 0) {
-    dt_learning_log("[INDIRECT] NULL_TARGET src=0x%x kind=%s", pc, kind);
+    if (site->null_count != UINT32_MAX) {
+      site->null_count++;
+    }
+    if (!site->null_reported) {
+      site->null_reported = true;
+      dt_learning_log("[INDIRECT] NULL_TARGET src=0x%x kind=%s count=%u",
+                      pc, kind, site->null_count);
+    }
     return;
   }
 
@@ -1024,8 +1034,10 @@ static void dispatch_indirect_call(uc_engine *uc, uint32_t pc) {
   }
 
   append_indirect_map_record(pc, target, kind);
-  dt_learning_log("[INDIRECT] RESOLVE src=0x%x target=0x%x kind=%s remaining=%d",
-                  pc, target, kind, g_num_indirect_sites - 1);
+  dt_learning_log("[INDIRECT] RESOLVE src=0x%x target=0x%x kind=%s "
+                  "null_count=%u remaining=%d",
+                  pc, target, kind, site->null_count,
+                  g_num_indirect_sites - 1);
   remove_indirect_site_at(idx);
 }
 
@@ -4425,6 +4437,7 @@ void set_indirect_enabled(int enabled) {
 
 void set_indirect_call_sites(uint32_t *sites, int num_sites) {
   g_num_indirect_sites = 0;
+  memset(g_indirect_sites, 0, sizeof(g_indirect_sites));
 
   if (!g_indirect_enabled) {
     dt_learning_log("[INDIRECT] SITES skipped reason=disabled");
